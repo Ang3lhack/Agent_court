@@ -1,0 +1,60 @@
+type AttemptInput = record {
+  artifact_hash : text;
+  attempt_id : text;
+  report_hash : text;
+  timestamp_unix_ms : nat64;
+  verdict : Verdict;
+  criteria_hash : text;
+  previous_attempt_id : opt text;
+  mission_id : text;
+};
+type EvaluationAttempt = record {
+  artifact_hash : text;
+  attempt_id : text;
+  report_hash : text;
+  timestamp_unix_ms : nat64;
+  verdict : Verdict;
+  criteria_hash : text;
+  previous_attempt_id : opt text;
+  registered_at : nat64;
+  registered_by : principal;
+  mission_id : text;
+};
+type Mission = record {
+  name : text;
+  description : text;
+  created_at : nat64;
+  criteria_hash : text;
+  registered_by : principal;
+  mission_id : text;
+};
+type MissionInput = record {
+  name : text;
+  description : text;
+  criteria_hash : text;
+  mission_id : text;
+};
+type RegistryError = variant {
+  InvalidInput : text;
+  ChainConflict : record { expected_previous_attempt_id : opt text };
+  CapacityReached;
+  NotFound;
+  Unauthorized;
+  AlreadyExists;
+  StorageError : text;
+};
+type Result = variant { Ok : opt EvaluationAttempt; Err : RegistryError };
+type Result_1 = variant { Ok : opt Mission; Err : RegistryError };
+type Result_2 = variant { Ok : vec EvaluationAttempt; Err : RegistryError };
+type Result_3 = variant { Ok : vec Mission; Err : RegistryError };
+type Result_4 = variant { Ok : EvaluationAttempt; Err : RegistryError };
+type Result_5 = variant { Ok : Mission; Err : RegistryError };
+type Verdict = variant { FAIL; PASS; NOT_RUN; ERROR };
+service : () -> {
+  get_attempt : (text) -> (Result) query;
+  get_mission : (text) -> (Result_1) query;
+  list_attempts : (text, opt text, nat16) -> (Result_2) query;
+  list_missions : (opt text, nat16) -> (Result_3) query;
+  register_attempt : (AttemptInput) -> (Result_4);
+  register_mission : (MissionInput) -> (Result_5);
+}
