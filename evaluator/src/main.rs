@@ -7,7 +7,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod cli;
 mod evidence;
+mod publisher;
 mod runner;
 
 const MISSION_ID: &str = "counter-v1";
@@ -219,28 +221,44 @@ fn evaluate() -> Evaluation {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    match args.as_slice() {
-        [] => {}
-        [command, rest @ ..] if command == "agent" => {
-            run_agent_command(rest);
+    let cli = cli::Cli::parse(&args).unwrap_or_else(|usage| {
+        eprintln!("{usage}");
+        std::process::exit(64);
+    });
+    let evidence_root = cli.evidence_dir;
+    match cli.action {
+        cli::Action::Evaluate => {}
+        cli::Action::Agent(rest) => {
+            run_agent_command(&rest);
             return;
         }
-        [command, attempt_id] if command == "verify" => {
-            run_verify_command(attempt_id);
+        cli::Action::Verify(attempt_id) => {
+            run_verify_command(&evidence_root, &attempt_id);
             return;
         }
-        [command] if command == "--help" || command == "-h" => {
-            println!("usage: agent-court-evaluator [verify <attempt_id> | agent <builder|reviewer|repair> <working-directory> <prompt>]");
+        cli::Action::Publish {
+            attempt_id,
+            identity,
+        } => {
+            let result = publisher::IcpCli::new(&identity).and_then(|mut registry| {
+                publisher::publish(&evidence_root, &attempt_id, &mut registry)
+            });
+            match result {
+                Ok(outcome) => println!("{outcome}: {attempt_id} (backend, entorno local). Metadatos originales confirmados mediante get_attempt."),
+                Err(error) => {
+                    eprintln!("PUBLICACIÓN FALLIDA: {error}");
+                    std::process::exit(2);
+                }
+            }
             return;
         }
-        _ => {
-            eprintln!("usage: agent-court-evaluator [verify <attempt_id> | agent <builder|reviewer|repair> <working-directory> <prompt>]");
-            std::process::exit(64);
+        cli::Action::Help => {
+            println!("{}", cli::USAGE);
+            return;
         }
     }
 
     let evaluation = evaluate();
-    let evidence_root = PathBuf::from(".agent-court");
     match evidence::record_attempt(&evidence_root, &evaluation) {
         Ok(record) => println!(
             "{}",
@@ -261,8 +279,8 @@ fn main() {
     }
 }
 
-fn run_verify_command(attempt_id: &str) {
-    match evidence::verify_attempt(Path::new(".agent-court"), attempt_id) {
+fn run_verify_command(evidence_root: &Path, attempt_id: &str) {
+    match evidence::verify_attempt(evidence_root, attempt_id) {
         Ok(evidence::Verification::Verified(record)) => {
             println!("VERIFICADO: {}\ncriteria.txt: {}\nartifact.rs: {}\nreport-payload.json: {}\nEl informe, el manifiesto y el registro JSONL son consistentes.", record.attempt_id, record.criteria_hash, record.artifact_hash, record.report_hash);
         }

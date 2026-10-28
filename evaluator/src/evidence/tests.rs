@@ -380,6 +380,17 @@ fn concurrent_writers_are_rejected_and_the_os_lock_is_released() {
 }
 
 #[test]
+fn writer_unlocks_even_if_another_handle_still_references_the_file_description() {
+    let root = TestRoot::new();
+    let lock = writer_lock(&root.0).unwrap();
+    // Model a file descriptor inherited by a child before close-on-exec.
+    let inherited = lock.0.try_clone().unwrap();
+    drop(lock);
+    assert!(record_attempt(&root.0, &sample()).is_ok());
+    drop(inherited);
+}
+
+#[test]
 fn existing_files_are_never_overwritten() {
     let root = TestRoot::new();
     let file = root.0.join("artifact.rs");

@@ -38,7 +38,7 @@ pub enum Verification {
     Legacy(EvidenceRecord),
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id
@@ -94,7 +94,18 @@ fn parse_history(bytes: &[u8]) -> Result<Vec<EvidenceRecord>, String> {
     Ok(records)
 }
 
-fn writer_lock(root: &Path) -> Result<File, String> {
+struct WriterLock(File);
+
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        // Release the shared file-description lock explicitly. A concurrently
+        // spawned child can briefly inherit the FD before close-on-exec; merely
+        // closing our handle would keep the lock alive until that child execs.
+        let _ = self.0.unlock();
+    }
+}
+
+fn writer_lock(root: &Path) -> Result<WriterLock, String> {
     fs::create_dir_all(root)
         .map_err(|error| format!("cannot create evidence directory: {error}"))?;
     let lock = OpenOptions::new()
@@ -107,7 +118,7 @@ fn writer_lock(root: &Path) -> Result<File, String> {
     lock.try_lock().map_err(|error| {
         format!("cannot acquire evidence writer lock (one writer at a time): {error}")
     })?;
-    Ok(lock) // The OS releases the lock when this handle closes, including process exit.
+    Ok(WriterLock(lock)) // Process exit still closes the underlying OS handle.
 }
 
 fn write_new_file(
@@ -152,6 +163,11 @@ fn check_hash(name: &str, bytes: &[u8], expected: &str) -> Result<(), String> {
 }
 
 fn validate_evaluation(evaluation: &Evaluation) -> Result<(), String> {
+    // serde_json::Value cannot represent u128 integers above u64::MAX. Reject
+    // them before hash_payload's json! conversion, rather than panic on input.
+    if u64::try_from(evaluation.report.timestamp_unix_ms).is_err() {
+        return Err("timestamp_unix_ms fuera del rango nat64".into());
+    }
     check_hash(
         "criteria.txt",
         &evaluation.criteria,

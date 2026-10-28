@@ -6,12 +6,12 @@ Agent Court es un MVP para evaluar una misión pequeña con Rust y conservar met
 
 | Carpeta | Función |
 | --- | --- |
-| `evaluator/` | Ejecutor Rust de la misión de ejemplo `counter-v1`, genera hashes SHA-256 y añade el resultado a `.agent-court/evidence.jsonl`. También ofrece un adaptador opcional para ejecutar Codex CLI con perfiles `builder`, `reviewer` y `repair`. |
+| `evaluator/` | Ejecutor Rust de `counter-v1` con paquetes SHA-256, almacén configurable, `verify` y publicación explícita de metadatos verificados mediante `publish` hacia ICP local. También ofrece un adaptador opcional para Codex CLI. |
 | `backend/` | Canister Rust que guarda misiones e intentos en memoria estable y expone consultas Candid. Las actualizaciones requieren que quien llama sea controlador del canister. |
-| `frontend/` | Cliente React/Vite configurado para generar bindings Candid y recibir el ID del backend desde `icp-cli`. La pantalla aún conserva el formulario de ejemplo Hello World y no está conectada a la interfaz nueva del registro. |
+| `frontend/` | Dashboard React/Vite que genera bindings Candid y consulta las misiones e intentos reales del backend. |
 | `icp.yaml` | Declara los canisters que construye y despliega `icp-cli`. |
 
-El evaluador actual ejecuta únicamente un fixture Rust confiable incluido en el código; todavía no ejecuta código generado por agentes ni constituye una sandbox del sistema operativo. El log JSONL local es append-only desde el programa, pero no es resistente a manipulación. Los hashes identifican bytes y no demuestran que el código sea correcto. El evaluador local todavía no envía automáticamente sus registros al canister.
+El evaluador actual ejecuta únicamente un fixture Rust confiable incluido en el código; todavía no ejecuta código generado por agentes ni constituye una sandbox del sistema operativo. El log JSONL local es append-only desde el programa, pero no es resistente a manipulación. Los hashes identifican bytes y no demuestran que el código sea correcto. `publish` verifica un paquete y registra sus ocho campos originales explícitamente en ICP local, con control de duplicados y cadena remota.
 
 ## Requisitos para Windows
 
@@ -128,6 +128,10 @@ cargo run --manifest-path evaluator/Cargo.toml
 
 El segundo comando compila y corre tres pruebas Rust del fixture `counter-v1`, imprime un informe JSON y añade un intento a `.agent-court/evidence.jsonl`. Ese directorio está ignorado por Git.
 
+Para la demostración de la etapa 4, conserva ese historial y usa un almacén
+independiente con `--evidence-dir .agent-court/demo-stage4`. Consulta los
+[comandos de generación, verificación y primera publicación manual](evaluator/README.md#primera-publicación-manual-de-counter-v1).
+
 Para ejecutar Codex de forma opcional, reemplaza la ruta y el prompt por los valores que necesites:
 
 ```bash
@@ -178,7 +182,10 @@ npm --prefix frontend run dev
 
 Vite imprime la dirección local, normalmente `http://localhost:5173`. Para detener Vite pulsa `Ctrl+C`; para parar la red, ejecuta `icp network stop`.
 
-**Estado actual:** el frontend aún muestra el formulario de saludo del template anterior, aunque el backend ya expone el registro de evidencias y no ofrece `greet`. Por eso la pantalla no es todavía una interfaz funcional del producto; el evaluador local y las consultas del canister sí se pueden probar por separado.
+**Estado actual:** el frontend consulta las misiones e intentos del backend real.
+Si la red y el canister ya están disponibles, basta con ejecutar
+`ICP_ENVIRONMENT=local npm --prefix frontend run dev`; no los redespliegues para
+visualizar una publicación de la etapa 4.
 
 ## Comandos de referencia
 
