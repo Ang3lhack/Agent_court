@@ -41,7 +41,7 @@ fn reset_clears_value() {
 }
 "#;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[allow(dead_code)]
 pub enum Status {
@@ -51,24 +51,78 @@ pub enum Status {
     NotRun,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct Check {
-    name: &'static str,
+    name: String,
     status: Status,
     detail: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct EvaluationReport {
     schema_version: u32,
-    mission_id: &'static str,
+    mission_id: String,
     pub verdict: Status,
     checks: Vec<Check>,
     pub criteria_hash: String,
     pub artifact_hash: String,
     pub report_hash: String,
     timestamp_unix_ms: u128,
-    isolation: &'static str,
+    isolation: String,
+}
+
+const REPORT_SCHEMA_VERSION: u32 = 2;
+
+impl EvaluationReport {
+    // This payload includes every report field except its own SHA-256 digest.
+    fn hash_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": self.schema_version,
+            "mission_id": self.mission_id,
+            "verdict": self.verdict,
+            "checks": self.checks,
+            "criteria_hash": self.criteria_hash,
+            "artifact_hash": self.artifact_hash,
+            "timestamp_unix_ms": self.timestamp_unix_ms,
+            "isolation": self.isolation,
+        })
+    }
+}
+
+pub struct Evaluation {
+    report: EvaluationReport,
+    criteria: Vec<u8>,
+    artifact: Vec<u8>,
+    report_payload: Vec<u8>,
+}
+
+impl Evaluation {
+    fn from_checks(verdict: Status, checks: Vec<Check>) -> Self {
+        let criteria = CRITERIA.as_bytes().to_vec();
+        let artifact = TEST_SOURCE.as_bytes().to_vec();
+        let mut report = EvaluationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            mission_id: MISSION_ID.into(),
+            verdict,
+            checks,
+            criteria_hash: sha256(&criteria),
+            artifact_hash: sha256(&artifact),
+            report_hash: String::new(),
+            timestamp_unix_ms: timestamp_ms(),
+            isolation: "unique temporary directory; trusted built-in fixture only".into(),
+        };
+        let report_payload =
+            serde_json::to_vec(&report.hash_payload()).expect("payload serializes");
+        report.report_hash = sha256(&report_payload);
+        Self {
+            report,
+            criteria,
+            artifact,
+            report_payload,
+        }
+    }
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -122,9 +176,7 @@ fn timestamp_ms() -> u128 {
         .unwrap_or_default()
 }
 
-fn evaluate() -> EvaluationReport {
-    let artifact_hash = sha256(TEST_SOURCE.as_bytes());
-    let criteria_hash = sha256(CRITERIA.as_bytes());
+fn evaluate() -> Evaluation {
     let mut checks = Vec::new();
     let mut verdict = Status::Error;
     let result = (|| -> Result<ExitStatus, String> {
@@ -142,7 +194,7 @@ fn evaluate() -> EvaluationReport {
         Ok(status) if status.success() => {
             verdict = Status::Pass;
             checks.push(Check {
-                name: "counter_contract",
+                name: "counter_contract".into(),
                 status: Status::Pass,
                 detail: "3 Rust tests passed: initial value, increment, reset".into(),
             });
@@ -150,59 +202,53 @@ fn evaluate() -> EvaluationReport {
         Ok(status) => {
             verdict = Status::Fail;
             checks.push(Check {
-                name: "counter_contract",
+                name: "counter_contract".into(),
                 status: Status::Fail,
                 detail: format!("Rust test process exited with {status}"),
             });
         }
         Err(error) => checks.push(Check {
-            name: "counter_contract",
+            name: "counter_contract".into(),
             status: Status::Error,
             detail: error,
         }),
     }
 
-    let timestamp_unix_ms = timestamp_ms();
-    let hash_input = serde_json::json!({
-        "schema_version": 1,
-        "mission_id": MISSION_ID,
-        "verdict": verdict,
-        "checks": checks,
-        "criteria_hash": criteria_hash,
-        "artifact_hash": artifact_hash,
-        "timestamp_unix_ms": timestamp_unix_ms,
-    });
-    let report_hash = sha256(hash_input.to_string().as_bytes());
-
-    EvaluationReport {
-        schema_version: 1,
-        mission_id: MISSION_ID,
-        verdict,
-        checks,
-        criteria_hash,
-        artifact_hash,
-        report_hash,
-        timestamp_unix_ms,
-        isolation: "unique temporary directory; trusted built-in fixture only",
-    }
+    Evaluation::from_checks(verdict, checks)
 }
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.first().is_some_and(|command| command == "agent") {
-        run_agent_command(&args[1..]);
-        return;
+    match args.as_slice() {
+        [] => {}
+        [command, rest @ ..] if command == "agent" => {
+            run_agent_command(rest);
+            return;
+        }
+        [command, attempt_id] if command == "verify" => {
+            run_verify_command(attempt_id);
+            return;
+        }
+        [command] if command == "--help" || command == "-h" => {
+            println!("usage: agent-court-evaluator [verify <attempt_id> | agent <builder|reviewer|repair> <working-directory> <prompt>]");
+            return;
+        }
+        _ => {
+            eprintln!("usage: agent-court-evaluator [verify <attempt_id> | agent <builder|reviewer|repair> <working-directory> <prompt>]");
+            std::process::exit(64);
+        }
     }
 
-    let report = evaluate();
-    let evidence_path = PathBuf::from(".agent-court/evidence.jsonl");
-    match evidence::record_attempt(&evidence_path, &report) {
+    let evaluation = evaluate();
+    let evidence_root = PathBuf::from(".agent-court");
+    match evidence::record_attempt(&evidence_root, &evaluation) {
         Ok(record) => println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "report": report,
+                "report": evaluation.report,
                 "evidence": record,
-                "evidence_path": evidence_path,
+                "evidence_path": evidence_root.join("evidence.jsonl"),
+                "package_path": evidence_root.join("attempts").join(&record.attempt_id),
             }))
             .expect("result serializes")
         ),
@@ -210,6 +256,22 @@ fn main() {
             eprintln!(
                 "evidence persistence failed; evaluation is not considered complete: {error}"
             );
+            std::process::exit(2);
+        }
+    }
+}
+
+fn run_verify_command(attempt_id: &str) {
+    match evidence::verify_attempt(Path::new(".agent-court"), attempt_id) {
+        Ok(evidence::Verification::Verified(record)) => {
+            println!("VERIFICADO: {}\ncriteria.txt: {}\nartifact.rs: {}\nreport-payload.json: {}\nEl informe, el manifiesto y el registro JSONL son consistentes.", record.attempt_id, record.criteria_hash, record.artifact_hash, record.report_hash);
+        }
+        Ok(evidence::Verification::Legacy(record)) => {
+            eprintln!("NO VERIFICABLE: {} es un registro histórico de solo metadatos. No se conservaron sus archivos originales; no se han reconstruido ni inventado evidencias.", record.attempt_id);
+            std::process::exit(3);
+        }
+        Err(error) => {
+            eprintln!("VERIFICACIÓN FALLIDA: {error}");
             std::process::exit(2);
         }
     }
@@ -227,7 +289,10 @@ fn run_agent_command(args: &[String]) {
         "reviewer" => AgentRole::Reviewer,
         "repair" => AgentRole::Repair,
         _ => {
-            eprintln!("unknown role: {}; expected builder, reviewer, or repair", args[0]);
+            eprintln!(
+                "unknown role: {}; expected builder, reviewer, or repair",
+                args[0]
+            );
             std::process::exit(64);
         }
     };
@@ -238,7 +303,10 @@ fn run_agent_command(args: &[String]) {
     };
     match CodexRunner.run(request) {
         Ok(result) => {
-            println!("{}", serde_json::to_string_pretty(&result).expect("result serializes"));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).expect("result serializes")
+            );
             if !result.success {
                 std::process::exit(result.exit_code.unwrap_or(1));
             }
@@ -264,7 +332,8 @@ mod tests {
 
     #[test]
     fn counter_mission_executes_in_a_temporary_workspace() {
-        let report = evaluate();
+        let evaluation = evaluate();
+        let report = evaluation.report;
         assert!(matches!(report.verdict, Status::Pass));
         assert_eq!(report.checks.len(), 1);
         assert!(report
@@ -273,5 +342,6 @@ mod tests {
             .all(|check| matches!(check.status, Status::Pass)));
         assert_eq!(report.artifact_hash, sha256(TEST_SOURCE.as_bytes()));
         assert_eq!(report.report_hash.len(), 64);
+        assert_eq!(report.report_hash, sha256(&evaluation.report_payload));
     }
 }
