@@ -100,10 +100,99 @@ fn usage_errors_do_not_create_evidence() {
         vec!["agent"],
         vec!["evaluate-file"],
         vec!["evaluate-file", "candidate.rs", "--unknown"],
+        vec!["orchestrate", "counter-v2"],
+        vec!["orchestrate", "--identity", "controller"],
+        vec!["orchestrate", "--publish", "--identity", "../bad"],
+        vec!["orchestrate", "--no-run"],
     ] {
         assert_eq!(workspace.run(&args).status.code(), Some(64));
         assert!(!workspace.0.join(".agent-court").exists());
     }
+}
+
+#[test]
+fn orchestrate_without_codex_stops_before_evaluation_or_evidence_creation() {
+    let workspace = Workspace::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-court-evaluator"))
+        .current_dir(&workspace.0)
+        .env("PATH", &workspace.0)
+        .args(["orchestrate", "counter-v1", "--evidence-dir", "store"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("BUILDER START"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!stdout.contains("EVALUATOR 1/2"));
+    assert!(!stdout.contains("VERDICT PASS"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot run codex exec"));
+    assert!(!workspace.0.join("store").exists());
+    assert!(!workspace.0.join(".agent-court").exists());
+}
+
+#[test]
+fn orchestrate_rejects_tmpdir_inside_a_repository_before_starting_agents() {
+    let workspace = Workspace::new();
+    fs::create_dir(workspace.0.join(".git")).unwrap();
+    fs::write(workspace.0.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-court-evaluator"))
+        .current_dir(&workspace.0)
+        .env("PATH", &workspace.0)
+        .env("TMPDIR", &workspace.0)
+        .args(["--evidence-dir", "store", "orchestrate"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("fuera del repositorio y del almacén"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("BUILDER START"));
+    assert!(!workspace.0.join("store").exists());
+    assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 1);
+}
+
+#[test]
+#[cfg(unix)]
+fn orchestrate_with_fixture_codex_and_missing_docker_records_error_without_repair_or_icp() {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = Workspace::new();
+    // Explicit executable test double: this script never invokes a model.
+    let fixture = workspace.0.join("codex");
+    fs::write(&fixture, format!("#!/bin/sh\n/bin/cat > /dev/null\n/bin/cat > candidate.rs <<'CANDIDATE'\n{}\nCANDIDATE\n", include_str!("fixtures/counter-pass.rs"))).unwrap();
+    fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-court-evaluator"))
+        .current_dir(&workspace.0)
+        .env("PATH", &workspace.0) // No Docker, ICP, or real Codex on this PATH.
+        .args(["--evidence-dir", "store", "orchestrate", "counter-v1"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("VERDICT ERROR attempt_id="),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("PUBLICATION LOCAL"));
+    assert!(!stdout.contains("REVIEWER START"));
+    assert!(!stdout.contains("REPAIR START"));
+    assert!(stdout.contains("MISSION END verdict=ERROR evaluations=1 repaired=false"));
+    let log = fs::read_to_string(workspace.0.join("store/evidence.jsonl")).unwrap();
+    let lines: Vec<_> = log.lines().collect();
+    assert_eq!(lines.len(), 1);
+    let record: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(record["verdict"], "ERROR");
+    assert!(workspace
+        .run(&[
+            "--evidence-dir",
+            "store",
+            "verify",
+            record["attempt_id"].as_str().unwrap()
+        ])
+        .status
+        .success());
+    assert!(!workspace.0.join(".agent-court").exists());
 }
 
 #[test]
@@ -175,11 +264,23 @@ fn agent_adapter_runs_only_a_controlled_fake_codex_and_preserves_all_role_argume
         let args = fs::read_to_string(workspace.0.join("agent-args.txt")).unwrap();
         let args: Vec<_> = args.lines().collect();
         assert_eq!(
-            &args[..6],
-            &["exec", "--json", "--sandbox", sandbox, "--cd", "."]
+            &args[..5],
+            &["exec", "--json", "--sandbox", sandbox, "--cd"]
         );
+        assert_eq!(Path::new(args[5]), fs::canonicalize(&workspace.0).unwrap());
         assert_eq!(args[6], "--output-last-message");
-        assert_eq!(args[8], "test prompt with spaces");
+        assert_eq!(args.last(), Some(&"-"));
+        assert!(args.contains(&"--skip-git-repo-check"));
+        assert!(args.contains(&"--ignore-user-config"));
+        assert!(args.contains(&"approval_policy=\"never\""));
+        assert!(args.contains(&"sandbox_workspace_write.writable_roots=[]"));
+        assert!(args.contains(&"sandbox_workspace_write.exclude_slash_tmp=true"));
+        assert!(args.contains(&"sandbox_workspace_write.exclude_tmpdir_env_var=true"));
+        assert!(args.contains(&"features.shell_tool=false"));
+        assert_eq!(
+            fs::read_to_string(workspace.0.join("agent-prompt.txt")).unwrap(),
+            "test prompt with spaces"
+        );
         assert!(!Path::new(args[7]).exists());
     }
     assert!(!workspace.0.join(".agent-court").exists());

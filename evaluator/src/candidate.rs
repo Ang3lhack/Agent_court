@@ -9,8 +9,7 @@ use std::{
     time::Duration,
 };
 
-mod process;
-use process::{Output, Stop};
+use crate::process::{self, Output, Stop};
 
 const IMAGE: &str = "rust:1.89.0-slim-bookworm";
 const SOURCE_LIMIT: u64 = 256 * 1024;
@@ -297,7 +296,7 @@ fn classify(output: &Output, state: &ContainerState) -> Result<(Status, String),
     }
 }
 
-fn read_candidate(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read_candidate(path: &Path) -> Result<Vec<u8>, String> {
     if !fs::symlink_metadata(path)
         .map_err(|e| format!("no se puede leer {}: {e}", path.display()))?
         .is_file()

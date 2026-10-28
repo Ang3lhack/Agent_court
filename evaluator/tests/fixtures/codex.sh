@@ -1,6 +1,7 @@
 #!/bin/sh
 # Controlled test process; never invokes a real model or Codex executable.
 printf '%s\n' "$@" > agent-args.txt
+/bin/cat > agent-prompt.txt
 while [ "$#" -gt 0 ]; do
     if [ "$1" = '--output-last-message' ]; then
         shift

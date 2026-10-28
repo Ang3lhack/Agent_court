@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: agent-court-evaluator [--evidence-dir <directory>] [evaluate-file <path> [--no-run] | verify <attempt_id> | publish <attempt_id> [--identity <name>]]\n       agent-court-evaluator agent <builder|reviewer|repair> <working-directory> <prompt>";
+pub const USAGE: &str = "usage: agent-court-evaluator [--evidence-dir <directory>] [evaluate-file <path> [--no-run] | verify <attempt_id> | publish <attempt_id> [--identity <name>]]\n       agent-court-evaluator [--evidence-dir <directory>] orchestrate [counter-v1] [--evidence-dir <directory>] [--publish [--identity <name>]]\n       agent-court-evaluator agent <builder|reviewer|repair> <working-directory> <prompt>";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -15,6 +15,10 @@ pub enum Action {
         identity: String,
     },
     Agent(Vec<String>),
+    Orchestrate {
+        publish: bool,
+        identity: String,
+    },
     Help,
 }
 
@@ -62,11 +66,70 @@ impl Cli {
             [command, rest @ ..] if command == "agent" && !explicit_store => {
                 Action::Agent(rest.to_vec())
             }
+            [command, rest @ ..] if command == "orchestrate" => {
+                return Self::orchestrate(evidence_dir, explicit_store, rest);
+            }
             _ => return Err(USAGE),
         };
         Ok(Self {
             evidence_dir,
             action,
+        })
+    }
+
+    fn orchestrate(
+        mut evidence_dir: PathBuf,
+        mut explicit_store: bool,
+        args: &[String],
+    ) -> Result<Self, &'static str> {
+        let mut rest = if args.first().is_some_and(|arg| arg == "counter-v1") {
+            &args[1..]
+        } else {
+            args
+        };
+        let mut publish = false;
+        let mut identity = None;
+        while !rest.is_empty() {
+            rest = match rest {
+                [flag, tail @ ..] if flag == "--publish" && !publish => {
+                    publish = true;
+                    tail
+                }
+                [flag, value, tail @ ..]
+                    if flag == "--identity"
+                        && identity.is_none()
+                        && !value.is_empty()
+                        && !value.starts_with('-') =>
+                {
+                    identity = Some(value.clone());
+                    tail
+                }
+                [flag, value, tail @ ..]
+                    if flag == "--evidence-dir"
+                        && !explicit_store
+                        && !value.is_empty()
+                        && !value.starts_with('-') =>
+                {
+                    evidence_dir = value.into();
+                    explicit_store = true;
+                    tail
+                }
+                _ => return Err(USAGE),
+            };
+        }
+        if identity
+            .as_deref()
+            .is_some_and(|id| !crate::evidence::valid_id(id))
+            || (identity.is_some() && !publish)
+        {
+            return Err(USAGE);
+        }
+        Ok(Self {
+            evidence_dir,
+            action: Action::Orchestrate {
+                publish,
+                identity: identity.unwrap_or_else(|| "agent-court-local".into()),
+            },
         })
     }
 }
@@ -137,6 +200,51 @@ mod tests {
             vec!["--evidence-dir", "x", "agent"],
             vec!["evaluate-file"],
             vec!["evaluate-file", "candidate.rs", "--unknown"],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn orchestrate_defaults_to_real_agents_local_evidence_and_explicit_publication() {
+        let local = Action::Orchestrate {
+            publish: false,
+            identity: "agent-court-local".into(),
+        };
+        assert_eq!(parse(&["orchestrate"]).unwrap().action, local);
+        assert_eq!(parse(&["orchestrate", "counter-v1"]).unwrap().action, local);
+        for args in [
+            vec!["--evidence-dir", "own-store", "orchestrate", "counter-v1"],
+            vec!["orchestrate", "--evidence-dir", "own-store"],
+        ] {
+            let cli = parse(&args).unwrap();
+            assert_eq!(cli.evidence_dir, PathBuf::from("own-store"));
+            assert_eq!(cli.action, local);
+        }
+        assert_eq!(
+            parse(&[
+                "orchestrate",
+                "counter-v1",
+                "--publish",
+                "--identity",
+                "supervised"
+            ])
+            .unwrap()
+            .action,
+            Action::Orchestrate {
+                publish: true,
+                identity: "supervised".into()
+            }
+        );
+        for args in [
+            vec!["orchestrate", "counter-v2"],
+            vec!["orchestrate", "--identity", "controller"],
+            vec!["orchestrate", "--publish", "--identity", "../bad"],
+            vec!["orchestrate", "--publish", "--publish"],
+            vec!["orchestrate", "--no-run"],
+            vec!["orchestrate", "--evidence-dir"],
+            vec!["--evidence-dir", "a", "orchestrate", "--evidence-dir", "b"],
+            vec!["orchestrate", "--max-attempts", "3"],
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
         }

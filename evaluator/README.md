@@ -7,6 +7,7 @@ serde_json, sha2, candid y hex; requiere Rust 1.89 o posterior por el bloqueo
 de archivos. La publicación es explícita y reutiliza `icp-cli` 1.7.0.
 `evaluate-file` permite además evaluar una implementación externa en Docker;
 el modo sin argumentos mantiene el fixture confiable anterior.
+`orchestrate counter-v1` conecta Codex CLI con ese evaluador (etapa 5B).
 
 ## Generar y verificar
 
@@ -61,8 +62,8 @@ cargo run --manifest-path evaluator/Cargo.toml -- agent reviewer ./backend "Revi
 ```
 
 Ese comando **sí invoca Codex**. No forma parte de la generación/verificación
-de este paquete ni se usa en sus pruebas. No se ha integrado código generado
-por agentes con el evaluador. Los argumentos desconocidos devuelven 64 para
+del fixture confiable. El adaptador se prueba con un ejecutable falso; las
+pruebas automáticas nunca llaman a un modelo real. Los argumentos desconocidos devuelven 64 para
 evitar generar un intento accidentalmente.
 
 ## Evaluar un archivo externo (etapa 5A)
@@ -485,6 +486,128 @@ y los [ejemplos oficiales de DFINITY](https://github.com/dfinity/examples).
 El comportamiento del proceso se contrastó con `icp --version`, `icp canister call --help`
 y el [código oficial de ICP CLI 1.7.0](https://github.com/dfinity/icp-cli/blob/v1.7.0/crates/icp-cli/src/commands/canister/call.rs).
 
-Queda pendiente el coordinador Builder → Reviewer → Repair y la integración
-automática con Codex. La etapa 5A solo evalúa el archivo externo seleccionado
-con pruebas independientes y aislamiento Docker, sin cambiar el dashboard.
+## Coordinador counter-v1 (etapa 5B)
+
+`orchestrate` usa `AgentRunner`; el comando normal selecciona `CodexRunner` y
+ejecuta el programa **codex de PATH**, sin sustituirlo por fixtures si falta.
+Los eventos identifican el ejecutor. Los fixtures existen en las pruebas y
+anuncian `SIMULATED AgentRunner`; un PASS de esos tests no demuestra una llamada
+a un modelo real. Verifica tu instalación con `command -v codex` y
+`codex --version` antes de la primera ejecución supervisada.
+
+El flujo fijo es Builder → Evaluator y, solo ante FAIL, Reviewer → Repair →
+Evaluator. Un primer PASS termina con `REPAIR no fue necesario`. Un FAIL final
+agota el presupuesto: **una reparación, dos evaluaciones como máximo**. ERROR
+y NOT_RUN conservan su veredicto y no solicitan reparaciones adicionales.
+La declaración de éxito de un agente nunca sustituye al evaluador.
+
+Cada rol recibe una copia temporal independiente que contiene únicamente
+`candidate.rs`, fuera del repositorio y del almacén. Builder y Repair editan
+ese archivo; Reviewer tiene sandbox `read-only` y una copia de solo lectura.
+Se rechazan archivos adicionales, symlinks, candidatos vacíos, no UTF-8 o de
+más de 256 KiB. Reviewer recibe los bytes evaluados y los diagnósticos reales
+de compilación/pruebas; Repair recibe además su análisis. Ningún agente
+recibe directorios escribibles del evaluador, las pruebas o los paquetes.
+
+Codex se ejecuta sin configuración de usuario ni reglas locales, con
+`--skip-git-repo-check --ephemeral`, aprobaciones `never`, raíces adicionales
+vacías y exclusión de `/tmp` y `$TMPDIR` como raíces escribibles generales.
+Las herramientas de ejecución de comandos (`features.shell_tool=false`),
+hooks, plugins, apps, navegador y subagentes se desactivan; las ediciones usan
+`apply_patch`. El código del candidato se compila y ejecuta exclusivamente en
+Docker. No se recurre a ejecución en el host si falla Docker o el sandbox.
+Requiere una versión de Codex compatible con esos flags; se comprobaron con
+`codex-cli 0.165.0` mediante ayuda/listado de features, sin llamar a un modelo.
+
+Cada invocación de Codex tiene un límite de 180 s y 256 KiB combinados de
+stdout/stderr; el mensaje final admite 16 KiB y el prompt 384 KiB. En Unix se
+detiene el grupo de procesos al finalizar o superar límites. El evaluador
+mantiene sus propios límites Docker. Los prompts y mensajes de control se
+eliminan al terminar; la evidencia conserva los bytes efectivamente evaluados.
+La configuración del sandbox y la desactivación de herramientas siguen la
+[referencia oficial de Codex](https://learn.chatgpt.com/docs/config-file/config-reference).
+La ejecución usa el [modo no interactivo oficial](https://learn.chatgpt.com/docs/non-interactive-mode).
+
+### Primera ejecución con Codex real, supervisada y local
+
+Desde la raíz del repositorio, con Codex ya autenticado y Docker preparado:
+
+```sh
+command -v codex
+codex --version
+codex exec --help
+docker info --format '{{.ServerVersion}}'
+docker image inspect --format '{{.Id}}' rust:1.89.0-slim-bookworm
+# Si falta la imagen, prepararla antes:
+# docker pull rust:1.89.0-slim-bookworm
+
+# Almacén nuevo, fuera del historial existente. Este comando sí llama a Codex.
+COURT_STORE="$(mktemp -d /tmp/agent-court-stage5b-real.XXXXXX)/evidence"
+cargo run --manifest-path evaluator/Cargo.toml --locked -- \
+  --evidence-dir "$COURT_STORE" orchestrate counter-v1
+
+# Copia el attempt_id de VERDICT (el último si hubo reparación).
+read -r -p 'attempt_id a verificar: ' COURT_ATTEMPT_ID
+cargo run --manifest-path evaluator/Cargo.toml --locked -- \
+  --evidence-dir "$COURT_STORE" verify "$COURT_ATTEMPT_ID"
+printf 'Evidencia conservada en: %s\n' "$COURT_STORE"
+```
+
+Los eventos imprimen BUILDER, EVALUATOR, REVIEWER y REPAIR cuando se ejecutan,
+cada veredicto, `attempt_id`, predecesor y resultado de publicación. Un candidato
+correcto producirá PASS. Si Codex genera un defecto real y Repair lo corrige,
+verás FAIL → PASS; **no se puede garantizar ese fallo con un modelo real**.
+No se inyecta un defecto ni se inventa una reparación cuando Builder ya pasa.
+
+### Reproducir PASS y FAIL → PASS sin usar Codex real
+
+Este comando ejecuta ambos casos de forma determinista con agentes fixture y
+**Docker real**. El FAIL procede de las pruebas independientes sobre el fixture
+defectuoso. Toda la evidencia va a directorios temporales del test:
+
+```sh
+cargo test --manifest-path evaluator/Cargo.toml --locked \
+  docker_orchestrated_pass_and_repair -- --ignored --nocapture
+```
+
+Para ejecutar únicamente las pruebas del flujo con evaluador y agentes
+simulados, sin Docker ni ICP:
+
+```sh
+cargo test --manifest-path evaluator/Cargo.toml --locked orchestrator::tests -- --nocapture
+```
+
+Los códigos de salida de `orchestrate` son 0 PASS, 1 FAIL, 2 ERROR o fallo de
+agente/persistencia/publicación, 3 NOT_RUN y 64 uso inválido. El comando normal
+siempre intenta Docker; NOT_RUN se cubre mediante el evaluador inyectado en tests.
+
+### Publicación explícita, solo posteriormente y bajo supervisión
+
+Sin `--publish` no se construye ningún cliente ICP. Con esa opción, cada
+evaluación se registra mediante `record_attempt`, se verifica y se publica con
+`publisher::publish`, en orden, antes de avanzar. Solo procesa intentos nuevos
+de esa ejecución; no recorre ni publica el historial pendiente. Puede publicar
+un FAIL verificable: el veredicto original se conserva.
+
+`.agent-court/demo-stage5a/` contiene FAIL y PASS locales **no publicados**;
+no usarlo para la primera publicación supervisada. `.agent-court/demo-stage4/`
+contiene el intento publicado realmente: se preservó durante esta implementación
+y las pruebas. Antes de una futura publicación, el operador debe comprobar que
+el almacén elegido continúa la punta remota. No usar el almacén temporal de la
+prueba local anterior si ICP ya tiene un predecesor diferente.
+
+Únicamente cuando se haya comprobado esa alineación, este es el comando manual
+para generar y publicar nuevos intentos (no se ejecutó durante la implementación):
+
+```sh
+read -r -p 'Almacén alineado con la punta remota, comprobado por el operador: ' COURT_ALIGNED_STORE
+cargo run --manifest-path evaluator/Cargo.toml --locked -- \
+  --evidence-dir "$COURT_ALIGNED_STORE" orchestrate counter-v1 \
+  --publish --identity agent-court-local
+```
+
+Ante `ChainConflict` o resultado no confirmado se detiene inmediatamente,
+sin reescribir `previous_attempt_id`, paquetes ni informes. El intento recién
+evaluado permanece local con su veredicto real. Para reconciliar una publicación
+incierta se usa `publish` con el **mismo ID**, no se lanza otra misión. El
+coordinador no despliega canisters, no cambia identidades y no usa `dfx`.

@@ -10,6 +10,8 @@ use std::{
 mod candidate;
 mod cli;
 mod evidence;
+mod orchestrator;
+mod process;
 mod publisher;
 mod runner;
 
@@ -242,6 +244,45 @@ fn main() {
     let evidence_root = cli.evidence_dir;
     match cli.action {
         cli::Action::Evaluate => {}
+        cli::Action::Orchestrate { publish, identity } => {
+            let mut publish_attempt = |root: &Path, id: &str| {
+                publisher::IcpCli::new(&identity)
+                    .and_then(|mut registry| publisher::publish(root, id, &mut registry))
+                    .map(|outcome| outcome.to_string())
+                    .map_err(|error| error.to_string())
+            };
+            let publication = if publish {
+                Some(&mut publish_attempt as &mut orchestrator::PublishFn<'_>)
+            } else {
+                None
+            };
+            let code = match orchestrator::orchestrate(
+                &evidence_root,
+                &runner::CodexRunner,
+                publication,
+                &mut |event| println!("{event}"),
+            ) {
+                Ok(outcome) => {
+                    println!(
+                        "MISSION END verdict={} evaluations={} repaired={}",
+                        orchestrator::label(outcome.verdict),
+                        outcome.attempts.len(),
+                        outcome.repaired
+                    );
+                    match outcome.verdict {
+                        Status::Pass => 0,
+                        Status::Fail => 1,
+                        Status::Error => 2,
+                        Status::NotRun => 3,
+                    }
+                }
+                Err(error) => {
+                    eprintln!("ORCHESTRATE ERROR: {error}");
+                    2
+                }
+            };
+            std::process::exit(code);
+        }
         cli::Action::EvaluateFile { path, no_run } => {
             match candidate::evaluate_file(&path, no_run) {
                 Ok(evaluation) => {

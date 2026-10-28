@@ -630,3 +630,149 @@ fn oversized_timestamp_in_untrusted_package_is_rejected_without_panic_or_icp() {
         .contains("nat64"));
     assert!(mock.calls.is_empty());
 }
+
+#[test]
+fn orchestrator_uses_real_publisher_with_simulated_registry_preserving_chains_and_conflicts() {
+    use crate::{
+        orchestrator,
+        runner::{AgentRequest, AgentResult, AgentRole, AgentRunner},
+    };
+    use std::cell::Cell;
+
+    struct Agents(Cell<usize>);
+    impl AgentRunner for Agents {
+        fn run(&self, request: AgentRequest) -> Result<AgentResult, String> {
+            self.0.set(self.0.get() + 1);
+            if request.role != AgentRole::Reviewer {
+                fs::write(
+                    request.working_dir.join("candidate.rs"),
+                    if request.role == AgentRole::Builder {
+                        "// simulated defective source"
+                    } else {
+                        "// simulated repaired source"
+                    },
+                )
+                .unwrap();
+            }
+            Ok(AgentResult {
+                role: request.role,
+                success: true,
+                exit_code: Some(0),
+                last_message: "simulated review".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+    struct ChainRegistry {
+        mission: Mission,
+        rows: Vec<RemoteAttempt>,
+        writes: Vec<AttemptInput>,
+    }
+    impl Registry for ChainRegistry {
+        fn get_mission(&mut self, _: &str) -> Result<Option<Mission>, PublishError> {
+            Ok(Some(self.mission.clone()))
+        }
+        fn get_attempt(&mut self, id: &str) -> Result<Option<RemoteAttempt>, PublishError> {
+            Ok(self.rows.iter().find(|row| row.attempt_id == id).cloned())
+        }
+        fn list_attempts(
+            &mut self,
+            _: &str,
+            _: Option<String>,
+        ) -> Result<Vec<RemoteAttempt>, PublishError> {
+            Ok(self.rows.clone())
+        }
+        fn register_attempt(
+            &mut self,
+            input: &AttemptInput,
+        ) -> Result<RemoteAttempt, PublishError> {
+            self.writes.push(input.clone());
+            let row = remote(input);
+            self.rows.push(row.clone());
+            Ok(row)
+        }
+    }
+    fn snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut files = vec![];
+        for entry in fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(snapshot(&path));
+            } else {
+                files.push((path.clone(), fs::read(path).unwrap()));
+            }
+        }
+        files.sort();
+        files
+    }
+    for conflict in [false, true] {
+        let package = Package::new();
+        let seed_bytes = snapshot(&package.root);
+        let agents = Agents(Cell::new(0));
+        let mut registry = ChainRegistry {
+            mission: Mock::new(&package).mission.unwrap(),
+            rows: if conflict {
+                vec![]
+            } else {
+                vec![remote(&package.input())]
+            },
+            writes: vec![],
+        };
+        let mut publication = |root: &Path, id: &str| {
+            let before = snapshot(root);
+            let result = publish(root, id, &mut registry)
+                .map(|outcome| outcome.to_string())
+                .map_err(|error| error.to_string());
+            assert_eq!(snapshot(root), before);
+            result
+        };
+        let result = orchestrator::run_with(
+            &package.root,
+            &agents,
+            |path| {
+                let bytes = fs::read(path).unwrap();
+                Ok(Evaluation::from_artifact(
+                    if bytes == b"// simulated defective source" {
+                        Status::Fail
+                    } else {
+                        Status::Pass
+                    },
+                    vec![],
+                    bytes,
+                    "SIMULATED evaluator, no execution".into(),
+                ))
+            },
+            Some(&mut publication),
+            &mut |_| {},
+        );
+        // Every original file remains byte-for-byte intact; the index only appends.
+        for (path, bytes) in seed_bytes {
+            let after = fs::read(&path).unwrap();
+            if path.file_name().unwrap() == "evidence.jsonl" {
+                assert!(after.starts_with(&bytes));
+            } else {
+                assert_eq!(after, bytes);
+            }
+        }
+        if conflict {
+            assert!(result.err().unwrap().contains("ChainConflict"));
+            assert!(registry.writes.is_empty());
+            assert_eq!(agents.0.get(), 1);
+        } else {
+            let result = result.unwrap();
+            assert_eq!(result.verdict, Status::Pass);
+            assert_eq!(registry.writes.len(), 2);
+            assert_eq!(
+                registry.writes[0].previous_attempt_id.as_ref(),
+                Some(&package.record.attempt_id)
+            );
+            assert_eq!(
+                registry.writes[1].previous_attempt_id.as_ref(),
+                Some(&registry.writes[0].attempt_id)
+            );
+            assert_eq!(registry.writes[0].verdict, Verdict::FAIL);
+            assert_eq!(registry.writes[1].verdict, Verdict::PASS);
+        }
+    }
+}
