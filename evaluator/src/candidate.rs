@@ -16,6 +16,7 @@ const SOURCE_LIMIT: u64 = 256 * 1024;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 const SUITE: &str = include_str!("candidate/suite.rs");
+const WORKER: &str = include_str!("candidate/worker.rs");
 const DRIVER: &str = include_str!("candidate/driver.sh");
 
 struct Workspace(PathBuf);
@@ -39,6 +40,7 @@ impl Workspace {
         for (name, bytes) in [
             ("candidate.rs", artifact),
             ("suite.rs", SUITE.as_bytes()),
+            ("worker.rs", WORKER.as_bytes()),
             ("driver.sh", DRIVER.as_bytes()),
         ] {
             let path = input.join(name);
@@ -336,7 +338,7 @@ fn evaluate_with(path: &Path, no_run: bool, docker: &Docker) -> Result<Evaluatio
             Err(error) => (Status::Error, error),
         }
     };
-    let isolation = format!("Docker Linux; {image}; read-only input/root; uid=65534; network=none; cap-drop=ALL; no-new-privileges; cpu=1; memory/swap=512MiB; pids=128; work=128MiB; tmp=16MiB; wall={}s; output={}B; compile=10s each; tests=5s; suite_sha256={}; driver_sha256={}", docker.run_timeout.as_secs(), process::OUTPUT_LIMIT, sha256(SUITE.as_bytes()), sha256(DRIVER.as_bytes()));
+    let isolation = format!("Docker Linux; {image}; read-only input/root; uid=65534; network=none; cap-drop=ALL; no-new-privileges; cpu=1; memory/swap=512MiB; pids=128; work=128MiB; tmp=16MiB; wall={}s; output={}B; compile=10s each; tests=5s; supervisor=separate-process; suite_sha256={}; worker_sha256={}; driver_sha256={}", docker.run_timeout.as_secs(), process::OUTPUT_LIMIT, sha256(SUITE.as_bytes()), sha256(WORKER.as_bytes()), sha256(DRIVER.as_bytes()));
     Ok(Evaluation::from_artifact(
         verdict,
         vec![Check {

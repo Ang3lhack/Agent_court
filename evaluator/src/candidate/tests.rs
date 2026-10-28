@@ -116,26 +116,105 @@ fn explicit_no_run_skips_docker_and_preserves_existing_chain_and_package() {
 fn prepared_mount_contains_only_exact_candidate_and_immutable_evaluator_sources() {
     let root = Workspace::prepare(GOOD.as_bytes()).unwrap();
     let input = root.0.join("input");
-    assert_eq!(fs::read_dir(&input).unwrap().count(), 3);
+    assert_eq!(fs::read_dir(&input).unwrap().count(), 4);
     assert_eq!(
         fs::read(input.join("candidate.rs")).unwrap(),
         GOOD.as_bytes()
     );
     assert_eq!(fs::read(input.join("suite.rs")).unwrap(), SUITE.as_bytes());
     assert_eq!(
+        fs::read(input.join("worker.rs")).unwrap(),
+        WORKER.as_bytes()
+    );
+    assert_eq!(
         fs::read(input.join("driver.sh")).unwrap(),
         DRIVER.as_bytes()
     );
     assert!(!SUITE.contains("struct Counter"));
+    assert!(!SUITE.contains("use candidate::"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for name in ["candidate.rs", "suite.rs", "driver.sh"] {
+        for name in ["candidate.rs", "suite.rs", "worker.rs", "driver.sh"] {
             assert_eq!(
                 fs::metadata(input.join(name)).unwrap().permissions().mode() & 0o222,
                 0
             );
         }
+    }
+}
+
+/// Regression: real Docker, never host execution or a simulated verdict.
+#[test]
+#[ignore = "requires the Docker daemon and pre-pulled official Rust image"]
+fn docker_supervisor_rejects_early_exit_codes() {
+    let root = workspace();
+    let docker = Docker::default();
+    let mut cases = vec![("correct".to_string(), GOOD.to_string(), Status::Pass)];
+    for code in [0, 73] {
+        for (site, source) in [
+            ("default", GOOD.replace("#[derive(Default)]", "").replace(
+                "pub struct Counter(u64);",
+                &format!("pub struct Counter(u64);\nimpl Default for Counter {{ fn default() -> Self {{ std::process::exit({code}); }} }}"),
+            )),
+            ("increment", GOOD.replace("self.0 += 1;", &format!("std::process::exit({code});"))),
+            ("value", GOOD.replace("{ self.0 }", &format!("{{ std::process::exit({code}); }}"))),
+            ("reset", GOOD.replace("self.0 = 0;", &format!("std::process::exit({code});"))),
+            ("last-response", GOOD.replace("{ self.0 }", &format!("{{ static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0); if CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 124 {{ std::process::exit({code}); }} self.0 }}"))),
+        ] {
+            assert_ne!(source, GOOD, "{site} fixture must actually inject exit({code})");
+            cases.push((format!("{site}-exit-{code}"), source, Status::Fail));
+        }
+    }
+    cases.extend([
+        (
+            "forged-reply-then-exit".into(),
+            GOOD.replace(
+                "self.0 += 1;",
+                "use std::{io::Write, os::fd::AsFd}; let mut channel = std::fs::File::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap()); writeln!(channel, \"00000000000000000000000000000000 1\").unwrap(); std::process::exit(0);",
+            ),
+            Status::Fail,
+        ),
+        (
+            "oversized-reply-without-newline".into(),
+            GOOD.replace(
+                "self.0 += 1;",
+                "use std::{io::Write, os::fd::AsFd}; let mut channel = std::fs::File::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap()); channel.write_all(&vec![b'x'; 1024 * 1024]).unwrap(); std::process::exit(73);",
+            ),
+            Status::Fail,
+        ),
+        (
+            "correct-with-stdout".into(),
+            GOOD.replace("self.0 += 1;", "println!(\"ALL TESTS PASSED\"); self.0 += 1;"),
+            Status::Pass,
+        ),
+    ]);
+    let store = root.0.join("evidence");
+    let mut previous = None;
+    for (name, source, expected) in cases {
+        let evaluation =
+            evaluate_with(&candidate(&root, source.as_bytes()), false, &docker).unwrap();
+        assert_eq!(
+            evaluation.report.verdict, expected,
+            "{name}: {:?}",
+            evaluation.report.checks
+        );
+        assert!(evaluation
+            .report
+            .isolation
+            .contains("supervisor=separate-process"));
+        assert!(evaluation
+            .report
+            .isolation
+            .contains(&format!("worker_sha256={}", sha256(WORKER.as_bytes()))));
+        let record = evidence::record_attempt(&store, &evaluation).unwrap();
+        assert_eq!(record.previous_attempt_id, previous);
+        assert!(matches!(
+            evidence::verify_attempt(&store, &record.attempt_id),
+            Ok(Verification::Verified(_))
+        ));
+        previous = Some(record.attempt_id);
+        println!("Docker supervisor {name}: {expected:?}, paquete verificado");
     }
 }
 

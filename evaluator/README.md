@@ -91,9 +91,11 @@ Esta implementación es solo un ejemplo: toda la implementación evaluada proced
 del archivo seleccionado. El evaluador no añade un Counter de respaldo.
 Su batería independiente comprueba cero inicial, 100 incrementos sucesivos,
 consultas repetidas sin mutación, reset idempotente, incremento después de reset
-y separación entre instancias. Se compila por separado y se enlaza con la
-biblioteca del candidato; no se activa `cfg(test)` al compilar esa biblioteca.
-Una terminación prematura con `exit(0)` no cuenta como completar la batería.
+y separación entre instancias. Solo el worker enlaza la biblioteca del candidato;
+no se activa `cfg(test)` al compilar esa biblioteca.
+Un supervisor independiente, sin enlazar al candidato, envía operaciones a un
+proceso worker y comprueba cada valor devuelto. Una terminación prematura con
+`exit(0)` o `exit(73)` no cuenta como completar la batería (etapa 5C).
 Antes de compilar el candidato, el contenedor compila y ejecuta un programa
 mínimo confiable para comprobar compiler, linker y permisos de ejecución;
 si falla esa comprobación se informa `ERROR` de infraestructura.
@@ -114,7 +116,7 @@ docker pull rust:1.89.0-slim-bookworm
 La imagen se resuelve a su ID inmutable. El contenedor usa UID/GID 65534, red
 `none`, todas las capacidades eliminadas, `no-new-privileges`, raíz en modo
 lectura y los perfiles predeterminados de seguridad de Docker. Solo se monta
-un directorio temporal con copias de `candidate.rs`, `suite.rs` y `driver.sh`,
+un directorio temporal con copias de `candidate.rs`, `suite.rs`, `worker.rs` y `driver.sh`,
 siempre en lectura. No se monta el repositorio, el almacén, directorios del
 usuario, credenciales ni el socket Docker. El candidato nunca se compila ni
 ejecuta con `rustc` del host ni dentro del evaluador.
@@ -139,10 +141,15 @@ de creación se intenta reconciliar únicamente el contenedor con el nombre y
 etiqueta exclusivos de esa evaluación.
 
 Docker comparte el kernel: estas restricciones reducen exposición y consumo,
-no equivalen a una VM para código hostil. Las pruebas y su driver son inmutables
-en disco, pero la biblioteca se enlaza con el proceso de pruebas; esto no prueba
-ausencia de trampas deliberadas contra el protocolo de terminación. Los agentes
-que entreguen candidatos no deben tener permisos de edición sobre el evaluador.
+no equivalen a una VM para código hostil. La biblioteca se enlaza únicamente
+con el worker; las expectativas y la decisión de completar la batería están
+en otro proceso, `suite.rs`. Ambos siguen dentro del mismo contenedor y con el
+mismo UID: esto no garantiza resistencia absoluta a código adversarial. Las
+pruebas funcionales tampoco demuestran ausencia de trampas. Un candidato puede
+intentar falsificar el protocolo o interferir con otros procesos; los IDs de
+petición no son autenticación frente a código arbitrario dentro del worker.
+Una defensa más fuerte requeriría separar permisos y canales de comunicación
+con otra arquitectura. Los agentes no deben poder editar el evaluador.
 Referencia: [seguridad de Docker Engine](https://docs.docker.com/engine/security/).
 
 ### Veredictos y evidencias
@@ -164,9 +171,67 @@ Se reutilizan `Evaluation`, `record_attempt` y el formato existente sin cambiar
 `verify`, `publish` ni Candid. `artifact.rs` contiene **los bytes exactos del
 archivo externo**; `artifact_hash` nunca identifica el fixture ni las pruebas.
 Los criterios y su hash siguen siendo los de `counter-v1`. El informe incluye
-el ID de imagen, límites y hashes SHA-256 de la batería y del driver dentro de
+el ID de imagen, límites y hashes SHA-256 de la batería, worker y driver dentro de
 `isolation`, que forma parte del payload hasheado. El almacén conserva su cadena
 y sus paquetes anteriores. Evaluar no publica nada en ICP.
+
+### Terminación anticipada: reproducción y mitigación (etapa 5C)
+
+Se reprodujo el fallo con Docker real **antes de modificar el driver**:
+
+| Candidato | Antes | Con supervisor independiente |
+| --- | --- | --- |
+| Contador correcto | PASS | PASS |
+| `increment` llama a `std::process::exit(0)` | FAIL | FAIL |
+| `increment` llama a `std::process::exit(73)` | **PASS falso** | FAIL |
+
+El driver anterior interpretaba el código 73 del proceso que enlazaba la
+biblioteca como prueba de completar todas las aserciones. El candidato podía
+producir ese mismo código antes de ejecutar las pruebas restantes.
+
+Ahora `suite.rs` se compila **sin `--extern candidate`** y arranca un worker
+separado que sí enlaza la biblioteca. El supervisor conserva las expectativas,
+envía una operación cada vez y verifica la respuesta antes de continuar. Cada
+petición lleva un ID aleatorio nuevo, comprobado al responder, para rechazar
+respuestas preimpresas o repetidas. El canal es un socket Unix privado pasado
+como descriptor 0; stdout y stderr se conservan como salida del candidato y
+mantienen sus límites previos. Cada línea del canal admite como máximo 64 bytes;
+EOF, respuesta inválida o ausencia de respuesta impiden completar las pruebas.
+Se mantiene el límite de 5 s para el supervisor y su worker. Tras comprobar
+toda la secuencia, el supervisor exige cierre sin salida adicional y estado 0
+del worker. El driver solo acepta el éxito del **supervisor**; la salida del
+worker por sí sola nunca es suficiente. No existe otro número mágico sustituto.
+
+Para generar el candidato del fallo y comprobar que ahora devuelve FAIL, desde
+la raíz del repositorio (todos los archivos quedan en un almacén temporal nuevo):
+
+```sh
+COURT_REPRO="$(mktemp -d /tmp/agent-court-stage5c.XXXXXX)"
+python3 - "$COURT_REPRO/candidate.rs" <<'PY'
+from pathlib import Path
+import sys
+source = Path('evaluator/tests/fixtures/counter-pass.rs').read_text()
+Path(sys.argv[1]).write_text(source.replace('self.0 += 1;', 'std::process::exit(73);'))
+PY
+cargo run --manifest-path evaluator/Cargo.toml --locked -- \
+  --evidence-dir "$COURT_REPRO/evidence" evaluate-file "$COURT_REPRO/candidate.rs"
+# Resultado esperado actual: FAIL y salida CLI 1. Antes de 5C devolvía PASS y 0.
+```
+
+Las regresiones Docker cubren `exit(0)` y `exit(73)` en `default`, `increment`,
+`value`, `reset` y justo antes de la última respuesta de la batería, además de
+una respuesta preimpresa falsa, una respuesta excesiva sin salto de línea y un
+contador correcto que escribe mensajes en stdout:
+
+```sh
+cargo test --manifest-path evaluator/Cargo.toml --locked \
+  docker_supervisor_rejects_early_exit_codes -- --ignored --nocapture
+```
+
+La evidencia conserva la misma estructura y criterios. Los hashes de las
+nuevas evaluaciones reflejan los nuevos fuentes; los paquetes, hashes y
+veredictos archivados antes de 5C no se modifican. `verify` sigue comprobando
+integridad, no reevalúa retrospectivamente la validez funcional de esos intentos.
 
 ### Ejemplos manuales comprobados
 

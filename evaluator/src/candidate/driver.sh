@@ -19,13 +19,16 @@ compile() {
     esac
 }
 
+# The supervisor is trusted and never linked with the candidate. A failure to
+# build it is infrastructure ERROR, not a candidate compilation failure.
+timeout -s KILL 10s rustc --edition=2021 /input/suite.rs -o /work/checks || exit 20
 compile --edition=2021 --crate-name candidate --crate-type rlib /input/candidate.rs -o /work/libcandidate.rlib
-compile --edition=2021 /input/suite.rs --extern candidate=/work/libcandidate.rlib -o /work/checks
+compile --edition=2021 /input/worker.rs --extern candidate=/work/libcandidate.rlib -o /work/worker
 timeout -s KILL 5s /work/checks
 result=$?
 case "$result" in
-    73) exit 0 ;;
+    0) exit 0 ;;                    # independent supervisor completed all checks
     124|137) exit 12 ;;
-    126|127) exit 20 ;;
+    20|126|127) exit 20 ;;
     *) exit 11 ;;
 esac
