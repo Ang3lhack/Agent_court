@@ -5,6 +5,8 @@ El evaluador compila y ejecuta las tres pruebas reales del fixture confiable
 para poder verificar su integridad después. Usa Rust estándar, serde,
 serde_json, sha2, candid y hex; requiere Rust 1.89 o posterior por el bloqueo
 de archivos. La publicación es explícita y reutiliza `icp-cli` 1.7.0.
+`evaluate-file` permite además evaluar una implementación externa en Docker;
+el modo sin argumentos mantiene el fixture confiable anterior.
 
 ## Generar y verificar
 
@@ -20,7 +22,7 @@ Sustituye `ATTEMPT_ID` por el campo `evidence.attempt_id` que imprime la primera
 ejecución. Las pruebas también imprimen su salida en consola; el paquete
 archivado y el JSONL son las fuentes persistentes para otras herramientas.
 
-La opción `--evidence-dir DIRECTORIO` debe ir **antes** de `verify` o `publish`;
+La opción `--evidence-dir DIRECTORIO` debe ir **antes** de `evaluate-file`, `verify` o `publish`;
 sin subcomando selecciona el almacén donde se genera el fixture:
 
 ```sh
@@ -63,6 +65,129 @@ de este paquete ni se usa en sus pruebas. No se ha integrado código generado
 por agentes con el evaluador. Los argumentos desconocidos devuelven 64 para
 evitar generar un intento accidentalmente.
 
+## Evaluar un archivo externo (etapa 5A)
+
+```sh
+cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a evaluate-file ./candidate.rs
+```
+
+El archivo debe ser regular, sin symlinks, de hasta 256 KiB y autocontenido,
+usando la biblioteca estándar. Se compila como biblioteca Rust 2021, sin Cargo,
+dependencias externas, build scripts ni pruebas aportadas por el candidato.
+El contrato público obligatorio es:
+
+```rust
+#[derive(Default)]
+pub struct Counter(u64);
+impl Counter {
+    pub fn increment(&mut self) { self.0 += 1; }
+    pub fn value(&self) -> u64 { self.0 }
+    pub fn reset(&mut self) { self.0 = 0; }
+}
+```
+
+Esta implementación es solo un ejemplo: toda la implementación evaluada procede
+del archivo seleccionado. El evaluador no añade un Counter de respaldo.
+Su batería independiente comprueba cero inicial, 100 incrementos sucesivos,
+consultas repetidas sin mutación, reset idempotente, incremento después de reset
+y separación entre instancias. Se compila por separado y se enlaza con la
+biblioteca del candidato; no se activa `cfg(test)` al compilar esa biblioteca.
+Una terminación prematura con `exit(0)` no cuenta como completar la batería.
+Antes de compilar el candidato, el contenedor compila y ejecuta un programa
+mínimo confiable para comprobar compiler, linker y permisos de ejecución;
+si falla esa comprobación se informa `ERROR` de infraestructura.
+
+### Preparación y aislamiento
+
+Se requiere un daemon Docker accesible y la imagen oficial indicada, preparada
+por el usuario. El evaluador comprueba ambos antes de crear un contenedor y
+**no descarga imágenes automáticamente**:
+
+```sh
+docker info --format '{{.ServerVersion}}'
+docker image inspect rust:1.89.0-slim-bookworm --format '{{.Id}}'
+# Solo si falta la imagen:
+docker pull rust:1.89.0-slim-bookworm
+```
+
+La imagen se resuelve a su ID inmutable. El contenedor usa UID/GID 65534, red
+`none`, todas las capacidades eliminadas, `no-new-privileges`, raíz en modo
+lectura y los perfiles predeterminados de seguridad de Docker. Solo se monta
+un directorio temporal con copias de `candidate.rs`, `suite.rs` y `driver.sh`,
+siempre en lectura. No se monta el repositorio, el almacén, directorios del
+usuario, credenciales ni el socket Docker. El candidato nunca se compila ni
+ejecuta con `rustc` del host ni dentro del evaluador.
+
+| Recurso | Límite fijo |
+| --- | --- |
+| CPU / memoria / memoria+swap | 1 CPU / 512 MiB / 512 MiB (sin swap adicional) |
+| Procesos / descriptores / core dumps | 128 / 128 / desactivados |
+| Archivos individuales / `/dev/shm` | 64 MiB / 1 MiB |
+| `/work` / `/tmp` | tmpfs de 128 MiB ejecutable / 16 MiB no ejecutable; ambos `nosuid,nodev` |
+| Tiempo del contenedor / cada compilación / pruebas | 30 s en el host / 10 s / 5 s dentro del contenedor |
+| stdout + stderr de la ejecución | 64 KiB combinados, capturados con memoria acotada |
+| Operación de control Docker | 5 s por invocación |
+
+El logging persistente del daemon está desactivado para evitar que la salida
+llene el disco. El veredicto utiliza el resultado del driver y el estado del
+contenedor consultado a Docker; no interpreta frases de éxito en stdout.
+Al exceder tiempo o salida se corta la conexión y se fuerza la eliminación
+del contenedor por su ID. También se elimina tras una salida normal o error;
+una limpieza que no puede confirmarse produce `ERROR`. Si se pierde la respuesta
+de creación se intenta reconciliar únicamente el contenedor con el nombre y
+etiqueta exclusivos de esa evaluación.
+
+Docker comparte el kernel: estas restricciones reducen exposición y consumo,
+no equivalen a una VM para código hostil. Las pruebas y su driver son inmutables
+en disco, pero la biblioteca se enlaza con el proceso de pruebas; esto no prueba
+ausencia de trampas deliberadas contra el protocolo de terminación. Los agentes
+que entreguen candidatos no deben tener permisos de edición sobre el evaluador.
+Referencia: [seguridad de Docker Engine](https://docs.docker.com/engine/security/).
+
+### Veredictos y evidencias
+
+| Veredicto / salida CLI | Significado |
+| --- | --- |
+| `PASS` / 0 | La batería independiente se completó correctamente. |
+| `FAIL` / 1 | Error de compilación/API, aserción fallida, terminación prematura o límite del candidato. |
+| `ERROR` / 2 | Docker/imagen/toolchain no disponible, estado inválido, error de control o limpieza fallida. |
+| `NOT_RUN` / 3 | Solo con `evaluate-file RUTA --no-run`; no invoca Docker. |
+
+Si no se pueden leer los bytes originales (archivo ausente, no regular o
+demasiado grande), se devuelve error 2 sin fabricar un paquete. Cuando el archivo
+se leyó, los errores de Docker y las omisiones explícitas sí conservan un intento
+con esos bytes y el veredicto correspondiente. Un error al guardar evidencia
+siempre devuelve 2, aunque las pruebas hubieran pasado.
+
+Se reutilizan `Evaluation`, `record_attempt` y el formato existente sin cambiar
+`verify`, `publish` ni Candid. `artifact.rs` contiene **los bytes exactos del
+archivo externo**; `artifact_hash` nunca identifica el fixture ni las pruebas.
+Los criterios y su hash siguen siendo los de `counter-v1`. El informe incluye
+el ID de imagen, límites y hashes SHA-256 de la batería y del driver dentro de
+`isolation`, que forma parte del payload hasheado. El almacén conserva su cadena
+y sus paquetes anteriores. Evaluar no publica nada en ICP.
+
+### Ejemplos manuales comprobados
+
+Desde la raíz, con el daemon y la imagen disponibles:
+
+```sh
+# PASS y salida 0:
+cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a evaluate-file evaluator/tests/fixtures/counter-pass.rs
+
+# FAIL y salida 1: incrementa de dos en dos.
+cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a evaluate-file evaluator/tests/fixtures/counter-fail.rs
+
+# Sin ejecución: NOT_RUN y salida 3.
+cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a evaluate-file evaluator/tests/fixtures/counter-pass.rs --no-run
+
+# Sustituye ATTEMPT_ID por evidence.attempt_id de cualquiera de las salidas:
+cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a verify ATTEMPT_ID
+```
+
+Puedes copiar los ejemplos a otra ruta `candidate.rs`, modificarlos y pasar
+esa ruta a `evaluate-file`. No se ejecuta el coordinador ni agentes reales.
+
 ## Archivos del paquete
 
 ```text
@@ -81,7 +206,7 @@ evitar generar un intento accidentalmente.
 | Archivo | Contenido y comprobación |
 | --- | --- |
 | `criteria.txt` | Bytes UTF-8 exactos de los criterios originales, sin agregar salto de línea; SHA-256 = `criteria_hash`. |
-| `artifact.rs` | Bytes exactos del fixture Rust evaluado, incluidas sus tres pruebas; SHA-256 = `artifact_hash`. |
+| `artifact.rs` | Bytes exactos del fixture confiable (modo predeterminado) o del archivo externo (`evaluate-file`); SHA-256 = `artifact_hash`. |
 | `report-payload.json` | Bytes JSON exactos empleados para el digest del informe; SHA-256 = `report_hash`. |
 | `report.json` | Informe estructurado completo, incluido `report_hash`; su checksum adicional es `manifest.report_file_hash`. |
 | `manifest.json` | `record` contiene misión, intento, predecesor, tres hashes, veredicto, timestamp en ms y `evidence_format_version: 1`. También contiene `report_file_hash`. |
@@ -334,12 +459,25 @@ errores de red antes y después de confirmar, respuestas inválidas y límites
 verifican sus hashes y prueban `agent` con un ejecutable Codex **falso** para los
 tres roles. No ejecutan agentes reales ni escriben en ICP.
 
-La única prueba de integración con ICP está ignorada de forma predeterminada
+La prueba de integración con ICP está ignorada de forma predeterminada
 y hace exclusivamente consultas. Para usar la red local ya existente:
 
 ```sh
 cargo test --manifest-path evaluator/Cargo.toml --locked read_only_local_icp -- --ignored --nocapture
 ```
+
+Las pruebas ordinarias de `evaluate-file` no requieren Docker: usan un proceso
+controlado y comprueban límites, argumentos, errores, bytes originales, cadena y
+verificación. La integración Docker también es optativa:
+
+```sh
+cargo test --manifest-path evaluator/Cargo.toml --locked docker_counter_files -- --ignored --nocapture
+```
+
+Esta prueba sí compila/ejecuta candidatos dentro de Docker: correcto, fallo
+lógico, error sintáctico, contrato incompleto, salida prematura, timeout,
+exceso de salida, exclusión de pruebas del candidato y comprobaciones de
+aislamiento. Genera y verifica paquetes en un almacén temporal propio; no usa ICP.
 
 Se consultaron la [skill ICP CLI](https://skills.internetcomputer.org/.well-known/skills/icp-cli/SKILL.md),
 la [guía de agentes ICP](https://docs.internetcomputer.org/guides/ai-coding-agents/)
@@ -347,6 +485,6 @@ y los [ejemplos oficiales de DFINITY](https://github.com/dfinity/examples).
 El comportamiento del proceso se contrastó con `icp --version`, `icp canister call --help`
 y el [código oficial de ICP CLI 1.7.0](https://github.com/dfinity/icp-cli/blob/v1.7.0/crates/icp-cli/src/commands/canister/call.rs).
 
-Queda pendiente integrar artefactos generados por Codex, definir su ejecución
-aislada y construir el flujo Builder → Reviewer → Repair. Esta etapa solo publica
-metadatos de paquetes ya verificados del fixture confiable.
+Queda pendiente el coordinador Builder → Reviewer → Repair y la integración
+automática con Codex. La etapa 5A solo evalúa el archivo externo seleccionado
+con pruebas independientes y aislamiento Docker, sin cambiar el dashboard.

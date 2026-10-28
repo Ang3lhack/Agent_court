@@ -1,10 +1,14 @@
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: agent-court-evaluator [--evidence-dir <directory>] [verify <attempt_id> | publish <attempt_id> [--identity <name>]]\n       agent-court-evaluator agent <builder|reviewer|repair> <working-directory> <prompt>";
+pub const USAGE: &str = "usage: agent-court-evaluator [--evidence-dir <directory>] [evaluate-file <path> [--no-run] | verify <attempt_id> | publish <attempt_id> [--identity <name>]]\n       agent-court-evaluator agent <builder|reviewer|repair> <working-directory> <prompt>";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     Evaluate,
+    EvaluateFile {
+        path: PathBuf,
+        no_run: bool,
+    },
     Verify(String),
     Publish {
         attempt_id: String,
@@ -33,6 +37,16 @@ impl Cli {
         };
         let action = match rest {
             [] => Action::Evaluate,
+            [command, path] if command == "evaluate-file" => Action::EvaluateFile {
+                path: path.into(),
+                no_run: false,
+            },
+            [command, path, flag] if command == "evaluate-file" && flag == "--no-run" => {
+                Action::EvaluateFile {
+                    path: path.into(),
+                    no_run: true,
+                }
+            }
             [command] if command == "--help" || command == "-h" => Action::Help,
             [command, id] if command == "verify" => Action::Verify(id.clone()),
             [command, id] if command == "publish" => Action::Publish {
@@ -75,6 +89,7 @@ mod tests {
             vec![],
             vec!["verify", "attempt-1"],
             vec!["publish", "attempt-1"],
+            vec!["evaluate-file", "candidate.rs"],
         ] {
             let mut args = vec!["--evidence-dir", ".agent-court/demo-stage4"];
             args.extend(tail);
@@ -120,6 +135,8 @@ mod tests {
             vec!["unknown"],
             vec!["verify", "a", "--evidence-dir", "elsewhere"],
             vec!["--evidence-dir", "x", "agent"],
+            vec!["evaluate-file"],
+            vec!["evaluate-file", "candidate.rs", "--unknown"],
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
         }

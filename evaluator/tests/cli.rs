@@ -98,10 +98,48 @@ fn usage_errors_do_not_create_evidence() {
         vec!["--evidence-dir"],
         vec!["publish", "a", "--network", "ic"],
         vec!["agent"],
+        vec!["evaluate-file"],
+        vec!["evaluate-file", "candidate.rs", "--unknown"],
     ] {
         assert_eq!(workspace.run(&args).status.code(), Some(64));
         assert!(!workspace.0.join(".agent-court").exists());
     }
+}
+
+#[test]
+fn evaluate_file_cli_no_run_preserves_external_bytes_and_missing_input_creates_no_attempt() {
+    let workspace = Workspace::new();
+    let missing = workspace.run(&["--evidence-dir", "store", "evaluate-file", "missing.rs"]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(!workspace.0.join("store").exists());
+    let bytes = include_bytes!("fixtures/counter-pass.rs");
+    fs::write(workspace.0.join("candidate.rs"), bytes).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-court-evaluator"))
+        .current_dir(&workspace.0)
+        .env("PATH", &workspace.0)
+        .args([
+            "--evidence-dir",
+            "store",
+            "evaluate-file",
+            "candidate.rs",
+            "--no-run",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["report"]["verdict"], "NOT_RUN");
+    let id = result["evidence"]["attempt_id"].as_str().unwrap();
+    let store = workspace.0.join("store");
+    assert_eq!(
+        fs::read(store.join("attempts").join(id).join("artifact.rs")).unwrap(),
+        bytes
+    );
+    assert!(workspace
+        .run(&["--evidence-dir", "store", "verify", id])
+        .status
+        .success());
+    assert!(!workspace.0.join(".agent-court").exists());
 }
 
 #[test]

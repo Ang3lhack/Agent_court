@@ -7,6 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod candidate;
 mod cli;
 mod evidence;
 mod publisher;
@@ -102,8 +103,21 @@ pub struct Evaluation {
 
 impl Evaluation {
     fn from_checks(verdict: Status, checks: Vec<Check>) -> Self {
+        Self::from_artifact(
+            verdict,
+            checks,
+            TEST_SOURCE.as_bytes().to_vec(),
+            "unique temporary directory; trusted built-in fixture only".into(),
+        )
+    }
+
+    fn from_artifact(
+        verdict: Status,
+        checks: Vec<Check>,
+        artifact: Vec<u8>,
+        isolation: String,
+    ) -> Self {
         let criteria = CRITERIA.as_bytes().to_vec();
-        let artifact = TEST_SOURCE.as_bytes().to_vec();
         let mut report = EvaluationReport {
             schema_version: REPORT_SCHEMA_VERSION,
             mission_id: MISSION_ID.into(),
@@ -113,7 +127,7 @@ impl Evaluation {
             artifact_hash: sha256(&artifact),
             report_hash: String::new(),
             timestamp_unix_ms: timestamp_ms(),
-            isolation: "unique temporary directory; trusted built-in fixture only".into(),
+            isolation,
         };
         let report_payload =
             serde_json::to_vec(&report.hash_payload()).expect("payload serializes");
@@ -228,6 +242,24 @@ fn main() {
     let evidence_root = cli.evidence_dir;
     match cli.action {
         cli::Action::Evaluate => {}
+        cli::Action::EvaluateFile { path, no_run } => {
+            match candidate::evaluate_file(&path, no_run) {
+                Ok(evaluation) => {
+                    let code = match evaluation.report.verdict {
+                        Status::Pass => 0,
+                        Status::Fail => 1,
+                        Status::Error => 2,
+                        Status::NotRun => 3,
+                    };
+                    record_evaluation(&evidence_root, evaluation);
+                    std::process::exit(code);
+                }
+                Err(error) => {
+                    eprintln!("ERROR: {error}; no se creó un intento sin los bytes del candidato");
+                    std::process::exit(2);
+                }
+            }
+        }
         cli::Action::Agent(rest) => {
             run_agent_command(&rest);
             return;
@@ -259,7 +291,11 @@ fn main() {
     }
 
     let evaluation = evaluate();
-    match evidence::record_attempt(&evidence_root, &evaluation) {
+    record_evaluation(&evidence_root, evaluation);
+}
+
+fn record_evaluation(evidence_root: &Path, evaluation: Evaluation) {
+    match evidence::record_attempt(evidence_root, &evaluation) {
         Ok(record) => println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
