@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: agent-court-evaluator [--evidence-dir <directory>] [evaluate-file <path> [--no-run] | verify <attempt_id> | publish <attempt_id> [--identity <name>]]\n       agent-court-evaluator [--evidence-dir <directory>] orchestrate [counter-v1] [--evidence-dir <directory>] [--publish [--identity <name>]]\n       agent-court-evaluator agent <builder|reviewer|repair> <working-directory> <prompt>";
+pub const USAGE: &str = "usage: agent-court-evaluator [--evidence-dir <directory>] [evaluate-file <path> [--no-run] | verify <attempt_id> | publish <attempt_id> [--identity <name>]]\n       agent-court-evaluator [--evidence-dir <directory>] orchestrate [counter-v1] [--evidence-dir <directory>] [--demo-seed <candidate.rs> | --publish [--identity <name>]]\n       agent-court-evaluator agent <builder|reviewer|repair> <working-directory> <prompt>";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -18,6 +18,7 @@ pub enum Action {
     Orchestrate {
         publish: bool,
         identity: String,
+        demo_seed: Option<PathBuf>,
     },
     Help,
 }
@@ -89,10 +90,20 @@ impl Cli {
         };
         let mut publish = false;
         let mut identity = None;
+        let mut demo_seed = None;
         while !rest.is_empty() {
             rest = match rest {
                 [flag, tail @ ..] if flag == "--publish" && !publish => {
                     publish = true;
+                    tail
+                }
+                [flag, value, tail @ ..]
+                    if flag == "--demo-seed"
+                        && demo_seed.is_none()
+                        && !value.is_empty()
+                        && !value.starts_with('-') =>
+                {
+                    demo_seed = Some(PathBuf::from(value));
                     tail
                 }
                 [flag, value, tail @ ..]
@@ -117,6 +128,9 @@ impl Cli {
                 _ => return Err(USAGE),
             };
         }
+        if demo_seed.is_some() && publish {
+            return Err("--demo-seed no permite --publish; publica después de comprobar la cadena manualmente");
+        }
         if identity
             .as_deref()
             .is_some_and(|id| !crate::evidence::valid_id(id))
@@ -129,6 +143,7 @@ impl Cli {
             action: Action::Orchestrate {
                 publish,
                 identity: identity.unwrap_or_else(|| "agent-court-local".into()),
+                demo_seed,
             },
         })
     }
@@ -210,6 +225,7 @@ mod tests {
         let local = Action::Orchestrate {
             publish: false,
             identity: "agent-court-local".into(),
+            demo_seed: None,
         };
         assert_eq!(parse(&["orchestrate"]).unwrap().action, local);
         assert_eq!(parse(&["orchestrate", "counter-v1"]).unwrap().action, local);
@@ -233,7 +249,8 @@ mod tests {
             .action,
             Action::Orchestrate {
                 publish: true,
-                identity: "supervised".into()
+                identity: "supervised".into(),
+                demo_seed: None,
             }
         );
         for args in [
@@ -247,6 +264,75 @@ mod tests {
             vec!["orchestrate", "--max-attempts", "3"],
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn demo_seed_is_explicit_local_and_cannot_be_combined_with_publication() {
+        for args in [
+            vec![
+                "--evidence-dir",
+                "own-store",
+                "orchestrate",
+                "counter-v1",
+                "--demo-seed",
+                "provided.rs",
+            ],
+            vec![
+                "orchestrate",
+                "counter-v1",
+                "--demo-seed",
+                "provided.rs",
+                "--evidence-dir",
+                "own-store",
+            ],
+        ] {
+            let cli = parse(&args).unwrap();
+            assert_eq!(cli.evidence_dir, PathBuf::from("own-store"));
+            assert_eq!(
+                cli.action,
+                Action::Orchestrate {
+                    publish: false,
+                    identity: "agent-court-local".into(),
+                    demo_seed: Some("provided.rs".into())
+                }
+            );
+        }
+        for args in [
+            vec!["orchestrate", "counter-v1", "--demo-seed"],
+            vec!["orchestrate", "--demo-seed", ""],
+            vec!["orchestrate", "--demo-seed", "--publish"],
+            vec!["orchestrate", "--demo-seed", "a.rs", "--demo-seed", "b.rs"],
+            vec![
+                "orchestrate",
+                "--demo-seed",
+                "a.rs",
+                "--identity",
+                "controller",
+            ],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
+        for args in [
+            vec![
+                "orchestrate",
+                "counter-v1",
+                "--demo-seed",
+                "a.rs",
+                "--publish",
+            ],
+            vec![
+                "orchestrate",
+                "--publish",
+                "--identity",
+                "controller",
+                "--demo-seed",
+                "a.rs",
+            ],
+        ] {
+            assert!(parse(&args)
+                .unwrap_err()
+                .contains("--demo-seed no permite --publish"));
         }
     }
 }

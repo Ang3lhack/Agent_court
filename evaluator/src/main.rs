@@ -244,7 +244,11 @@ fn main() {
     let evidence_root = cli.evidence_dir;
     match cli.action {
         cli::Action::Evaluate => {}
-        cli::Action::Orchestrate { publish, identity } => {
+        cli::Action::Orchestrate {
+            publish,
+            identity,
+            demo_seed,
+        } => {
             let mut publish_attempt = |root: &Path, id: &str| {
                 publisher::IcpCli::new(&identity)
                     .and_then(|mut registry| publisher::publish(root, id, &mut registry))
@@ -259,6 +263,7 @@ fn main() {
             let code = match orchestrator::orchestrate(
                 &evidence_root,
                 &runner::CodexRunner,
+                demo_seed.as_deref(),
                 publication,
                 &mut |event| println!("{event}"),
             ) {

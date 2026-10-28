@@ -565,6 +565,8 @@ Evaluator. Un primer PASS termina con `REPAIR no fue necesario`. Un FAIL final
 agota el presupuesto: **una reparación, dos evaluaciones como máximo**. ERROR
 y NOT_RUN conservan su veredicto y no solicitan reparaciones adicionales.
 La declaración de éxito de un agente nunca sustituye al evaluador.
+La opción `--demo-seed` permite iniciar una demostración controlada sin Builder,
+según se describe abajo para la etapa 5D.
 
 Cada rol recibe una copia temporal independiente que contiene únicamente
 `candidate.rs`, fuera del repositorio y del almacén. Builder y Repair editan
@@ -623,6 +625,74 @@ cada veredicto, `attempt_id`, predecesor y resultado de publicación. Un candida
 correcto producirá PASS. Si Codex genera un defecto real y Repair lo corrige,
 verás FAIL → PASS; **no se puede garantizar ese fallo con un modelo real**.
 No se inyecta un defecto ni se inventa una reparación cuando Builder ya pasa.
+
+### Demostración controlada de Reviewer y Repair reales (etapa 5D)
+
+`orchestrate counter-v1 --demo-seed RUTA` copia los bytes del candidato
+proporcionado a un workspace temporal aislado, sin editar el archivo original.
+Anuncia **`DEMO CONTROLADA — candidato inicial proporcionado`** y
+`BUILDER OMITIDO (--demo-seed)`: ese código no fue generado por Builder.
+Reviewer y Repair reciben también esa procedencia en sus prompts.
+El archivo debe cumplir los límites habituales: regular, sin symlinks,
+no vacío, UTF-8 y hasta 256 KiB. No hace falta copiar ni modificar pruebas.
+
+La primera evaluación usa Docker y conserva su evidencia real. Solo ante FAIL
+se invoca Codex CLI mediante `CodexRunner`: Reviewer analiza el código y los
+errores reales en solo lectura, Repair modifica otra copia temporal y Docker
+evalúa esa copia. El segundo resultado se registra incluso si sigue en FAIL.
+Se mantienen una reparación y dos evaluaciones como máximo, con los mismos
+límites de tiempo, salida y aislamiento del flujo normal.
+
+Un primer PASS termina sin agentes ni reparación. ERROR y NOT_RUN detienen
+el flujo sin solicitar reparación automática. Si falta Codex o falla un agente
+después del primer FAIL, ese intento permanece registrado y no se inventa
+una segunda evaluación. Sin `--demo-seed`, Builder sigue ejecutándose como antes.
+
+Para la primera ejecución **manual y supervisada**, con Codex ya autenticado,
+ejecuta desde la raíz del repositorio:
+
+```sh
+command -v codex
+codex --version
+docker info --format '{{.ServerVersion}}'
+docker image inspect --format '{{.Id}}' rust:1.89.0-slim-bookworm
+# Si falta la imagen, prepararla antes: docker pull rust:1.89.0-slim-bookworm
+
+COURT_DEMO_DIR="$(mktemp -d /tmp/agent-court-stage5d-real.XXXXXX)"
+COURT_DEMO_STORE="$COURT_DEMO_DIR/evidence"
+sha256sum evaluator/tests/fixtures/counter-fail.rs > "$COURT_DEMO_DIR/seed.sha256"
+
+# Este comando sí invoca Reviewer y Repair con Codex real si Docker devuelve FAIL.
+cargo run --manifest-path evaluator/Cargo.toml --locked -- \
+  --evidence-dir "$COURT_DEMO_STORE" orchestrate counter-v1 \
+  --demo-seed evaluator/tests/fixtures/counter-fail.rs
+COURT_DEMO_EXIT=$?
+printf 'Salida: %s; evidencia: %s\n' "$COURT_DEMO_EXIT" "$COURT_DEMO_STORE"
+sha256sum --check "$COURT_DEMO_DIR/seed.sha256"
+
+# Repite verify para cada attempt_id mostrado (el segundo solo si se generó).
+read -r -p 'attempt_id a verificar: ' COURT_DEMO_ATTEMPT
+cargo run --manifest-path evaluator/Cargo.toml --locked -- \
+  --evidence-dir "$COURT_DEMO_STORE" verify "$COURT_DEMO_ATTEMPT"
+```
+
+El fixture conocido incrementa por dos, por lo que debe producir un FAIL real.
+Se espera que Repair lo corrija, pero **no se garantiza ni fuerza PASS**. La
+prueba con el modelo real queda para el operador; las pruebas automatizadas
+usan agentes simulados. El ensayo completo de la CLI usa el adaptador
+`CodexRunner` con un ejecutable falso y Docker real; comprueba FAIL → PASS y
+FAIL → FAIL, conservando el original y verificando ambos paquetes:
+
+```sh
+cargo test --manifest-path evaluator/Cargo.toml --locked \
+  docker_cli_demo_uses_fixture_codex_only_for_review_and_repair -- --ignored --nocapture
+```
+
+`--demo-seed` y `--publish` son incompatibles: la CLI los rechaza con salida
+64 antes de leer el archivo, ejecutar agentes o crear evidencia. La demo no
+llama a ICP. Una publicación posterior usaría el publicador existente, únicamente
+tras comprobar manualmente la cadena; un almacén temporal de demostración no
+debe suponerse alineado con el historial remoto. No se reescriben predecesores.
 
 ### Reproducir PASS y FAIL → PASS sin usar Codex real
 

@@ -730,6 +730,7 @@ fn orchestrator_uses_real_publisher_with_simulated_registry_preserving_chains_an
         let result = orchestrator::run_with(
             &package.root,
             &agents,
+            None,
             |path| {
                 let bytes = fs::read(path).unwrap();
                 Ok(Evaluation::from_artifact(
