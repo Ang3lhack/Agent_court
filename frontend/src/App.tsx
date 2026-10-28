@@ -1,78 +1,150 @@
-import { useState } from "react";
-import { createActor } from "./backend/api/backend";
-import { getCanisterEnv } from "@icp-sdk/core/agent/canister-env";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { EvaluationAttempt, Mission, Verdict } from "./backend/api/backend";
+import { useRegistryPage, type ConnectionState } from "./hooks/useRegistryPage";
+import { readAttemptPage, readMissionPage } from "./lib/client";
+import { formatTimestamp, type QueryFailure } from "./lib/registry";
 import "./App.css";
 
-// Here we define the environment variables that the asset canister serves.
-// By default, the CLI sets all the canister IDs in the environment variables of the asset canister
-// using the `PUBLIC_CANISTER_ID:<canister-name>` format.
-// For this reason, we can expect the `PUBLIC_CANISTER_ID:backend` environment variable to be set.
-interface CanisterEnv {
-  readonly "PUBLIC_CANISTER_ID:backend": string;
+const missionKey = (mission: Mission) => mission.mission_id;
+const attemptKey = (attempt: EvaluationAttempt) => attempt.attempt_id;
+const verdictLabels: Record<Verdict, string> = {
+  PASS: "Aprobado",
+  FAIL: "Falló la evaluación",
+  ERROR: "Error de evaluación",
+  NOT_RUN: "Sin ejecutar",
+};
+
+function QueryError({ error }: { error: QueryFailure }) {
+  return (
+    <div className="notice notice-error" role="alert">
+      <strong>{error.title}</strong>
+      <p>{error.message}</p>
+      <details>
+        <summary>Detalles técnicos completos</summary>
+        <pre>{error.detail}</pre>
+      </details>
+    </div>
+  );
 }
 
-// We only want to access the environment variables when serving the frontend from the asset canister.
-// `getCanisterEnv` will retrieve the environment variables and the root key from the cookie returned
-// by the asset canister.
-// When developing locally, the Vite server will inject the cookie into the responses.
-// See vite.config.ts.
-const canisterEnv = getCanisterEnv<CanisterEnv>();
-const canisterId = canisterEnv["PUBLIC_CANISTER_ID:backend"];
+function Timestamp({ value, unit }: { value: bigint; unit: "ns" | "ms" }) {
+  const date = formatTimestamp(value, unit);
+  return date.iso ? <time dateTime={date.iso} title={date.iso}>{date.label}</time> : <span>{date.label}</span>;
+}
 
-// We always use the root key that is coming back from the cookie in the asset canister
-const helloWorldActor = createActor(canisterId, {
-  agentOptions: {
-    rootKey: canisterEnv.IC_ROOT_KEY,
-  },
-});
+function Hash({ label, value }: { label: string; value: string }) {
+  return <div className="metadata-field"><dt>{label}</dt><dd><code className="hash">{value}</code></dd></div>;
+}
 
-function App() {
-  const [greeting, setGreeting] = useState("");
-
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const nameInput = (event.target as HTMLFormElement).elements.namedItem(
-      "name"
-    ) as HTMLInputElement;
-
-    helloWorldActor.greet(nameInput.value).then(setGreeting);
-    return false;
-  }
+function MissionDetail({ mission, blocked, onConnection }: {
+  mission: Mission;
+  blocked: boolean;
+  onConnection: (state: ConnectionState) => void;
+}) {
+  const fetchPage = useCallback((cursor: string | null) => readAttemptPage(mission.mission_id, cursor), [mission.mission_id]);
+  const attempts = useRegistryPage(fetchPage, attemptKey, onConnection, blocked);
 
   return (
-    <main className="page">
-      <section className="panel">
-        <div className="brand" aria-label="ICP plus Vite">
-          <img src="/icp.svg" alt="ICP logo" className="brand-icp" />
-          <span className="plus">+</span>
-          <img src="/react.svg" alt="React logo" className="brand-framework" />
-          <span className="plus">+</span>
-          <img src="/vite.svg" alt="Vite logo" className="brand-vite" />
-        </div>
-        <h1 className="title">Hello World</h1>
-        <p className="subtitle">
-          Call the backend canister and get a greeting.
-        </p>
-        <form className="form" action="#" onSubmit={handleSubmit}>
-          <label htmlFor="name">Enter your name</label>
-          <div className="controls">
-            <input
-              id="name"
-              alt="Name"
-              type="text"
-              className="input"
-              placeholder="Ada Lovelace"
-            />
-            <button type="submit" className="button">
-              Greet me
-            </button>
-          </div>
-        </form>
-        <section id="greeting" className="greeting" aria-live="polite">
-          {greeting}
+    <>
+      <a className="back-to-missions" href="#missions">← Volver a las misiones</a>
+      <div className="section-heading">
+        <div><p className="eyebrow">DETALLE DE MISIÓN</p><h2 id="mission-detail-title">{mission.name}</h2></div>
+        <button className="button button-secondary" onClick={attempts.refresh} disabled={attempts.loading || blocked}>Actualizar intentos</button>
+      </div>
+      <code className="identifier">{mission.mission_id}</code>
+      <p className="description">{mission.description || "Sin descripción."}</p>
+      <dl className="metadata mission-metadata">
+        <Hash label="Hash de criterios · SHA-256" value={mission.criteria_hash} />
+        <div className="metadata-field"><dt>Creada</dt><dd><Timestamp value={mission.created_at} unit="ns" /></dd></div>
+      </dl>
+      <div className="subsection-heading"><h3>Intentos de evaluación</h3><span className="count">{attempts.items.length} cargados</span></div>
+      {attempts.error && <QueryError error={attempts.error} />}
+      {attempts.loading && !blocked && <p className="loading-message" role="status">Consultando intentos…</p>}
+      {!attempts.loading && !attempts.error && attempts.items.length === 0 && (
+        <div className="empty-state"><span className="empty-symbol" aria-hidden="true">↳</span><h3>Todavía no hay intentos</h3><p>Esta misión existe en el registro, pero aún no tiene evaluaciones registradas.</p></div>
+      )}
+      <ol className="attempt-list" aria-label="Intentos registrados" aria-busy={attempts.loading}>
+        {attempts.items.map((attempt) => (
+          <li className="attempt-card" key={attempt.attempt_id}>
+            <div className="attempt-heading"><code className="identifier">{attempt.attempt_id}</code><span className={`verdict verdict-${attempt.verdict.toLowerCase().replaceAll("_", "-")}`} title={verdictLabels[attempt.verdict]}>{attempt.verdict}</span></div>
+            <p className="attempt-date"><Timestamp value={attempt.timestamp_unix_ms} unit="ms" /> · {verdictLabels[attempt.verdict]}</p>
+            <dl className="metadata">
+              <Hash label="Hash del artefacto · SHA-256" value={attempt.artifact_hash} />
+              <Hash label="Hash del informe · SHA-256" value={attempt.report_hash} />
+              <div className="metadata-field"><dt>Intento anterior</dt><dd>{attempt.previous_attempt_id ? <code className="identifier">{attempt.previous_attempt_id}</code> : "Ninguno · primer intento"}</dd></div>
+            </dl>
+          </li>
+        ))}
+      </ol>
+      {attempts.hasMore && <button className="button button-pagination" disabled={attempts.loading || blocked} onClick={attempts.loadMore}>Cargar más intentos</button>}
+      {attempts.items.length > 0 && <p className="pagination-note">{attempts.hasMore ? "Se muestran los intentos cargados; puede haber más." : "Fin del listado de intentos consultado."}</p>}
+    </>
+  );
+}
+
+function App() {
+  const [connection, setConnection] = useState<ConnectionState>({ status: "checking" });
+  const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
+  const detailPanel = useRef<HTMLElement>(null);
+  const onConnection = useCallback((state: ConnectionState) => {
+    // A clock error stops further requests until the page is reloaded.
+    setConnection((previous) => previous.error?.clockError ? previous : { ...state, canisterId: state.canisterId ?? previous.canisterId });
+  }, []);
+  const blocked = connection.error?.clockError === true;
+  const missions = useRegistryPage(readMissionPage, missionKey, onConnection, blocked);
+  const selectedMission = missions.items.find((mission) => mission.mission_id === selectedMissionId) ?? null;
+  useEffect(() => {
+    if (selectedMissionId) detailPanel.current?.focus();
+  }, [selectedMissionId]);
+  const connectionLabel = connection.status === "connected" ? "Conectado" : connection.status === "checking" ? "Comprobando conexión" : blocked ? "Consultas detenidas" : "Consulta fallida";
+
+  return (
+    <div className="app-shell">
+      <a className="skip-link" href="#missions">Ir a las misiones</a>
+      <header className="app-header">
+        <a className="brand" href="#" aria-label="Agent Court, inicio"><span className="brand-mark" aria-hidden="true">AC</span><span>Agent Court<span className="brand-caption">Codex Evidence Engine</span></span></a>
+        <span className="read-only">Solo lectura</span>
+      </header>
+      <main>
+        <section className="intro" aria-labelledby="page-title">
+          <p className="eyebrow">EVIDENCIA PARA EL CÓDIGO GENERADO POR AGENTES</p>
+          <h1 id="page-title">Agent Court<span className="title-dot">.</span></h1>
+          <p className="intro-description">Explora misiones, revisa los resultados de evaluación y consulta las referencias de evidencia registradas en Internet Computer.</p>
         </section>
-      </section>
-    </main>
+        <section className="registry-status" aria-label="Estado del registro">
+          <div><span className="stat-label">Misiones cargadas</span><strong className="stat-number">{missions.items.length}</strong><span className="stat-note">{missions.hasMore ? "Puede haber más páginas" : "En el listado actual"}</span></div>
+          <div><span className="stat-label">Última consulta a ICP</span><span className={`connection-status connection-${connection.status}`} role="status"><span className="status-dot" aria-hidden="true" />{connectionLabel}</span><span className="stat-note">{connection.status === "connected" ? "Respuesta recibida del canister" : "El estado se comprueba mediante una consulta"}</span></div>
+          <div className="canister-stat"><span className="stat-label">Canister backend</span><code className="identifier">{connection.canisterId ?? "Pendiente de verificar"}</code><span className="stat-note">Fechas en tu zona horaria</span></div>
+        </section>
+        {blocked && connection.error && <QueryError error={connection.error} />}
+        <div className="dashboard-grid">
+          <section className="panel missions-panel" id="missions" tabIndex={-1} aria-labelledby="missions-title">
+            <div className="section-heading"><div><p className="eyebrow">REGISTRO ICP</p><h2 id="missions-title">Misiones</h2></div><button className="button button-secondary" disabled={missions.loading || blocked} onClick={missions.refresh}>Actualizar misiones</button></div>
+            {missions.error && !blocked && <QueryError error={missions.error} />}
+            {missions.loading && !blocked && <p className="loading-message" role="status">Consultando misiones…</p>}
+            {!missions.loading && !missions.error && missions.items.length === 0 && (
+              <div className="empty-state"><span className="empty-symbol" aria-hidden="true">[ ]</span><h3>El registro está vacío</h3><p>Todavía no existen misiones registradas en este canister. Cuando se registre una misión, aparecerá aquí al actualizar.</p></div>
+            )}
+            <ul className="mission-list" aria-label="Misiones registradas" aria-busy={missions.loading}>
+              {missions.items.map((mission) => (
+                <li key={mission.mission_id} className={`mission-card${selectedMission?.mission_id === mission.mission_id ? " mission-selected" : ""}`}>
+                  <button className="mission-select" onClick={() => { if (selectedMission?.mission_id !== mission.mission_id) { onConnection({ status: "checking" }); setSelectedMissionId(mission.mission_id); } }} aria-pressed={selectedMission?.mission_id === mission.mission_id} aria-controls="mission-detail"><span>{mission.name}</span><span aria-hidden="true">↗</span></button>
+                  <code className="identifier">{mission.mission_id}</code>
+                  <p className="description">{mission.description || "Sin descripción."}</p>
+                  <dl className="metadata"><Hash label="Hash de criterios" value={mission.criteria_hash} /><div className="metadata-field"><dt>Creada</dt><dd><Timestamp value={mission.created_at} unit="ns" /></dd></div></dl>
+                </li>
+              ))}
+            </ul>
+            {missions.hasMore && <button className="button button-pagination" disabled={missions.loading || blocked} onClick={missions.loadMore}>Cargar más misiones</button>}
+            {missions.items.length > 0 && <p className="pagination-note">{missions.hasMore ? "El contador corresponde a las misiones cargadas, no al total del registro." : "Fin del listado de misiones consultado."}</p>}
+          </section>
+          <section className="panel detail-panel" id="mission-detail" ref={detailPanel} tabIndex={-1} aria-labelledby="mission-detail-title">
+            {selectedMission ? <MissionDetail key={selectedMission.mission_id} mission={selectedMission} blocked={blocked} onConnection={onConnection} /> : <div className="empty-state selection-state"><span className="empty-symbol" aria-hidden="true">⌘</span><p className="eyebrow">HISTORIAL DE EVALUACIÓN</p><h2 id="mission-detail-title">Selecciona una misión</h2><p>Consulta sus intentos, veredictos y hashes de evidencia en este panel.</p></div>}
+          </section>
+        </div>
+      </main>
+      <footer className="app-footer"><span>Agent Court / Codex Evidence Engine</span><span>Consultas reales · Sin escritura en el registro</span></footer>
+    </div>
   );
 }
 

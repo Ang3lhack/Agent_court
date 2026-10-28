@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "generate:bindings": "node scripts/generate-bindings.mjs",
+    "typecheck": "npm run generate:bindings && tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "build": "npm run typecheck && vite build",
+    "test": "node --test tests/*.test.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
