@@ -1,13 +1,19 @@
 # Evaluador Agent Court: evidencias locales y publicación ICP
 
-El evaluador compila y ejecuta las tres pruebas reales del fixture confiable
-`counter-v1`. Conserva los bytes originales de criterios, fixture e informe
-para poder verificar su integridad después. Usa Rust estándar, serde,
-serde_json, sha2, candid y hex; requiere Rust 1.89 o posterior por el bloqueo
-de archivos. La publicación es explícita y reutiliza `icp-cli` 1.7.0.
-`evaluate-file` permite además evaluar una implementación externa en Docker;
-el modo sin argumentos mantiene el fixture confiable anterior.
-`orchestrate counter-v1` conecta Codex CLI con ese evaluador (etapa 5B).
+`orchestrate counter-v1` coordina Builder → Evaluator y, solo ante FAIL,
+Reviewer → Repair → Evaluator, usando Codex CLI real y evaluación independiente
+en Docker. Conserva los bytes originales de criterios, candidato e informe,
+con un máximo de dos evaluaciones y una reparación. `evaluate-file` evalúa un
+archivo externo sin agentes; el modo sin subcomando conserva el fixture
+confiable histórico, ejecutado en el host. Ese fixture no sustituye a los
+candidatos del coordinador.
+
+Usa Rust estándar, serde, serde_json, sha2, candid y hex; requiere Rust 1.89 o
+posterior por el bloqueo de archivos. La publicación explícita usa `icp-cli`
+1.7.0. Builder, Reviewer y Repair ya se validaron con Codex real; el historial
+5D conserva el ciclo real FAIL → PASS, con Builder omitido por `--demo-seed`.
+Consulta el [recorrido del hackathon](../README.md#demo-inmediata-con-el-historial-existente)
+para mostrarlo sin generar intentos nuevos.
 
 ## Generar y verificar
 
@@ -15,22 +21,21 @@ Ejecuta desde la raíz del repositorio; `.agent-court/` se resuelve respecto al
 directorio de trabajo, no respecto a Cargo.toml.
 
 ```sh
-cargo run --manifest-path evaluator/Cargo.toml
-cargo run --manifest-path evaluator/Cargo.toml -- verify ATTEMPT_ID
+COURT_FIXTURE_STORE="$(mktemp -d /tmp/agent-court-fixture.XXXXXX)/evidence"
+cargo run --manifest-path evaluator/Cargo.toml --locked -- --evidence-dir "$COURT_FIXTURE_STORE"
+# Sustituye ATTEMPT_ID por el ID que acaba de imprimirse.
+cargo run --manifest-path evaluator/Cargo.toml --locked -- --evidence-dir "$COURT_FIXTURE_STORE" verify ATTEMPT_ID
 ```
 
 Sustituye `ATTEMPT_ID` por el campo `evidence.attempt_id` que imprime la primera
 ejecución. Las pruebas también imprimen su salida en consola; el paquete
 archivado y el JSONL son las fuentes persistentes para otras herramientas.
 
+El ejemplo anterior genera un fixture nuevo, no agentes. Para comprobar
+evidencias existentes usa solo `verify` con su almacén e ID.
 La opción `--evidence-dir DIRECTORIO` debe ir **antes** de `evaluate-file`, `verify` o `publish`;
-sin subcomando selecciona el almacén donde se genera el fixture:
-
-```sh
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage4
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage4 verify ATTEMPT_ID
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage4 publish ATTEMPT_ID --identity agent-court-local
-```
+sin subcomando selecciona el almacén donde se genera el fixture. `orchestrate`
+también admite esa opción después de la misión.
 
 El valor predeterminado sigue siendo `.agent-court/`. Cada almacén tiene su
 propio índice, paquetes y bloqueo; el primer intento de cada misión lleva
@@ -50,7 +55,7 @@ Códigos de salida de `verify`:
 | 3 | Registro histórico de solo metadatos: no verificable. |
 | 64 | Uso incorrecto de la CLI. |
 
-El modo sin argumentos conserva los veredictos PASS, FAIL, ERROR y NOT_RUN.
+El modelo de informes admite PASS, FAIL, ERROR y NOT_RUN.
 Un fallo de persistencia devuelve 2 y no anuncia una evaluación completa.
 El veredicto de evaluación y el resultado de verificar integridad son conceptos
 diferentes: verificar correctamente un paquete FAIL no convierte el código en PASS.
@@ -58,18 +63,22 @@ diferentes: verificar correctamente un paquete FAIL no convierte el código en P
 El subcomando existente sigue disponible:
 
 ```sh
-cargo run --manifest-path evaluator/Cargo.toml -- agent reviewer ./backend "Revisa sin modificar archivos."
+cargo run --manifest-path evaluator/Cargo.toml --locked -- agent reviewer /tmp/mi-copia-candidato "Revisa sin modificar archivos."
 ```
 
 Ese comando **sí invoca Codex**. No forma parte de la generación/verificación
-del fixture confiable. El adaptador se prueba con un ejecutable falso; las
-pruebas automáticas nunca llaman a un modelo real. Los argumentos desconocidos devuelven 64 para
+del fixture confiable. La ruta del ejemplo debe ser una copia preparada por el
+operador. `agent` es un acceso de bajo nivel: para la gestión de workspaces y
+las restricciones de `candidate.rs`, utiliza `orchestrate`.
+El adaptador se prueba con un ejecutable falso; las pruebas automáticas nunca
+llaman a un modelo real. Los argumentos desconocidos devuelven 64 para
 evitar generar un intento accidentalmente.
 
 ## Evaluar un archivo externo (etapa 5A)
 
 ```sh
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a evaluate-file ./candidate.rs
+COURT_FILE_STORE="$(mktemp -d /tmp/agent-court-file.XXXXXX)/evidence"
+cargo run --manifest-path evaluator/Cargo.toml --locked -- --evidence-dir "$COURT_FILE_STORE" evaluate-file ./candidate.rs
 ```
 
 El archivo debe ser regular, sin symlinks, de hasta 256 KiB y autocontenido,
@@ -238,17 +247,18 @@ integridad, no reevalúa retrospectivamente la validez funcional de esos intento
 Desde la raíz, con el daemon y la imagen disponibles:
 
 ```sh
+COURT_FILE_STORE="$(mktemp -d /tmp/agent-court-files.XXXXXX)/evidence"
 # PASS y salida 0:
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a evaluate-file evaluator/tests/fixtures/counter-pass.rs
+cargo run --manifest-path evaluator/Cargo.toml --locked -- --evidence-dir "$COURT_FILE_STORE" evaluate-file evaluator/tests/fixtures/counter-pass.rs
 
 # FAIL y salida 1: incrementa de dos en dos.
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a evaluate-file evaluator/tests/fixtures/counter-fail.rs
+cargo run --manifest-path evaluator/Cargo.toml --locked -- --evidence-dir "$COURT_FILE_STORE" evaluate-file evaluator/tests/fixtures/counter-fail.rs
 
 # Sin ejecución: NOT_RUN y salida 3.
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a evaluate-file evaluator/tests/fixtures/counter-pass.rs --no-run
+cargo run --manifest-path evaluator/Cargo.toml --locked -- --evidence-dir "$COURT_FILE_STORE" evaluate-file evaluator/tests/fixtures/counter-pass.rs --no-run
 
 # Sustituye ATTEMPT_ID por evidence.attempt_id de cualquiera de las salidas:
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage5a verify ATTEMPT_ID
+cargo run --manifest-path evaluator/Cargo.toml --locked -- --evidence-dir "$COURT_FILE_STORE" verify ATTEMPT_ID
 ```
 
 Puedes copiar los ejemplos a otra ruta `candidate.rs`, modificarlos y pasar
@@ -272,7 +282,7 @@ esa ruta a `evaluate-file`. No se ejecuta el coordinador ni agentes reales.
 | Archivo | Contenido y comprobación |
 | --- | --- |
 | `criteria.txt` | Bytes UTF-8 exactos de los criterios originales, sin agregar salto de línea; SHA-256 = `criteria_hash`. |
-| `artifact.rs` | Bytes exactos del fixture confiable (modo predeterminado) o del archivo externo (`evaluate-file`); SHA-256 = `artifact_hash`. |
+| `artifact.rs` | Bytes exactos del candidato generado/reparado/proporcionado (`orchestrate`), del archivo externo (`evaluate-file`) o del fixture confiable (modo histórico); SHA-256 = `artifact_hash`. |
 | `report-payload.json` | Bytes JSON exactos empleados para el digest del informe; SHA-256 = `report_hash`. |
 | `report.json` | Informe estructurado completo, incluido `report_hash`; su checksum adicional es `manifest.report_file_hash`. |
 | `manifest.json` | `record` contiene misión, intento, predecesor, tres hashes, veredicto, timestamp en ms y `evidence_format_version: 1`. También contiene `report_file_hash`. |
@@ -460,58 +470,37 @@ tokens, sesiones o credenciales. La gestión de identidad permanece en ICP CLI.
 Ante `Invalid request expiry`, comprueba la sincronización del reloj del host/WSL
 y de la réplica; nunca cambies el timestamp archivado para solucionarlo.
 
-## Primera publicación manual de counter-v1
+## Publicación manual de counter-v1
 
-La misión ya está registrada en la red local existente. No despliegues ni
-reinstales canisters para este procedimiento. En la validación de esta etapa se
-leyó su hash de criterios correcto y cero intentos mediante ICP CLI y el adaptador
-Rust, **sin ejecutar un update real**. La primera escritura queda para el usuario.
+El intento de `.agent-court/demo-stage4/` ya fue publicado realmente en una
+etapa previa. Conserva ese almacén y la red existente. La descripción histórica
+de una primera escritura pendiente no representa el estado actual del MVP.
+El estado de la red en el momento de presentar debe consultarse, sin asumir
+que los historiales locales y remotos coinciden.
 
-Los cuatro registros originales de `.agent-court/evidence.jsonl` se conservan.
-Los tres primeros no tienen paquetes y no son publicables. El cuarto es verificable
-pero depende del tercero: con ICP vacío se rechaza con `ChainConflict`.
-El almacén nuevo resuelve esa diferencia sin modificar el historial.
+Usa el [procedimiento de publicación de un intento existente](../README.md#publicar-un-intento-ya-verificado-en-icp-local):
+consulta misión e historial completo, comprueba criterios y punta por enlaces,
+selecciona un ID ya verificado y publica explícitamente con una identidad ya
+controladora. No generes intentos en los almacenes históricos para resolver
+diferencias ni cambies sus predecesores. Un registro legacy no es publicable.
 
-Desde la raíz del repositorio, en Bash/WSL:
+`demo-stage5a/` conserva FAIL y PASS locales no publicados en aquella etapa.
+La demo real 5D se ejecutó sin publicación. Su almacén contiene cuatro intentos;
+solo los dos últimos están referenciados por el log Reviewer/Repair real.
+No se publican automáticamente ni se supone que la cadena encaje con ICP.
 
-```sh
-# 1. Generar SOLO si este almacén todavía no existe.
-test ! -e .agent-court/demo-stage4 && \
-  cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage4
-
-# Copia evidence.attempt_id de la salida y pégalo cuando read espere una línea.
-read -r -p 'attempt_id generado: ' ATTEMPT_ID
-
-# 2. Verificar los archivos y sus hashes.
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage4 verify "$ATTEMPT_ID"
-
-# 3. Publicar manualmente; responde solo al prompt oficial de ICP si aparece.
-cargo run --manifest-path evaluator/Cargo.toml -- --evidence-dir .agent-court/demo-stage4 publish "$ATTEMPT_ID" --identity agent-court-local
-
-# 4. Leer el historial y el intento concreto.
-icp canister call backend list_attempts '("counter-v1", null, 100 : nat16)' --environment local --identity anonymous --query --output candid --candid backend/backend.did
-icp canister call backend get_attempt "(\"$ATTEMPT_ID\")" --environment local --identity anonymous --query --output candid --candid backend/backend.did
-
-# 5. Abrir Vite usando la red y el backend ya existentes.
-ICP_ENVIRONMENT=local npm --prefix frontend run dev
-```
-
-Abre la URL que imprima Vite (habitualmente `http://localhost:5173`), actualiza
-las misiones, selecciona `counter-v1` y actualiza sus intentos. El dashboard
-mostrará los metadatos publicados. No necesita un deploy nuevo. Si el directorio
-demo ya existe, conserva sus archivos: reutiliza su primer ID o elige otro
-directorio vacío, teniendo en cuenta la punta remota actual.
-
-No se ha validado una publicación real exitosa en esta etapa. Sí se validaron
-el flujo completo con mocks/procesos controlados y las consultas reales de lectura.
+No despliegues ni reinstales para consultar o publicar. La guía oficial de
+ICP CLI advierte que stop/start de la red local descarta estado: no uses ese
+procedimiento como arreglo rápido para expiry. El modo de evidencia local
+permite continuar la presentación si PocketIC no está disponible.
 
 ## Pruebas
 
 ```sh
-cargo test --manifest-path evaluator/Cargo.toml
+cargo test --manifest-path evaluator/Cargo.toml --locked
 cargo fmt --manifest-path evaluator/Cargo.toml -- --check
 cargo check --manifest-path evaluator/Cargo.toml --locked
-cargo clippy --manifest-path evaluator/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path evaluator/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
 Las pruebas de persistencia y alteración crean sus propios directorios temporales;
@@ -583,8 +572,9 @@ Las herramientas de ejecución de comandos (`features.shell_tool=false`),
 hooks, plugins, apps, navegador y subagentes se desactivan; las ediciones usan
 `apply_patch`. El código del candidato se compila y ejecuta exclusivamente en
 Docker. No se recurre a ejecución en el host si falla Docker o el sandbox.
-Requiere una versión de Codex compatible con esos flags; se comprobaron con
-`codex-cli 0.165.0` mediante ayuda/listado de features, sin llamar a un modelo.
+Requiere una versión de Codex compatible con esos flags; se contrastaron con
+`codex-cli 0.165.0`. La validación del MVP incluye llamadas reales de Builder
+y de Reviewer/Repair; las ayudas se vuelven a consultar sin llamar al modelo.
 
 Cada invocación de Codex tiene un límite de 180 s y 256 KiB combinados de
 stdout/stderr; el mensaje final admite 16 KiB y el prompt 384 KiB. En Unix se
@@ -595,7 +585,7 @@ La configuración del sandbox y la desactivación de herramientas siguen la
 [referencia oficial de Codex](https://learn.chatgpt.com/docs/config-file/config-reference).
 La ejecución usa el [modo no interactivo oficial](https://learn.chatgpt.com/docs/non-interactive-mode).
 
-### Primera ejecución con Codex real, supervisada y local
+### Ejecución con Codex real, supervisada y local
 
 Desde la raíz del repositorio, con Codex ya autenticado y Docker preparado:
 
@@ -648,7 +638,7 @@ el flujo sin solicitar reparación automática. Si falta Codex o falla un agente
 después del primer FAIL, ese intento permanece registrado y no se inventa
 una segunda evaluación. Sin `--demo-seed`, Builder sigue ejecutándose como antes.
 
-Para la primera ejecución **manual y supervisada**, con Codex ya autenticado,
+Para repetir una ejecución **manual y supervisada**, con Codex ya autenticado,
 ejecuta desde la raíz del repositorio:
 
 ```sh
@@ -677,9 +667,13 @@ cargo run --manifest-path evaluator/Cargo.toml --locked -- \
 ```
 
 El fixture conocido incrementa por dos, por lo que debe producir un FAIL real.
-Se espera que Repair lo corrija, pero **no se garantiza ni fuerza PASS**. La
-prueba con el modelo real queda para el operador; las pruebas automatizadas
-usan agentes simulados. El ensayo completo de la CLI usa el adaptador
+Se espera que Repair lo corrija, pero **no se garantiza ni fuerza PASS**.
+La validación manual real posterior quedó conservada en
+`.agent-court/demo-stage5d-real-0jJ6d5/evidence` y su `../orchestrate.log`:
+los dos últimos intentos son FAIL → PASS, con Builder omitido y Reviewer/Repair
+de Codex real según el log. Los cuatro intentos y hashes se preservan.
+Consulta el [recorrido sin nuevas ejecuciones](../README.md#demo-inmediata-con-el-historial-existente).
+Las pruebas automatizadas usan agentes simulados. El ensayo completo de la CLI usa el adaptador
 `CodexRunner` con un ejecutable falso y Docker real; comprueba FAIL → PASS y
 FAIL → FAIL, conservando el original y verificando ambos paquetes:
 

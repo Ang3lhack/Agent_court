@@ -1,5 +1,9 @@
 # Evidencia local y registro ICP · Etapa 6
 
+Para la presentación final, consulta la [arquitectura, preparación y guion de
+dos minutos](../README.md). Esta guía detalla el visor ya implementado; no
+requiere repetir las llamadas reales de agentes para mostrar la demo.
+
 El dashboard conserva el diseño oscuro y separa dos orígenes:
 
 - **Evidencia local**: archivo JSON importado por el usuario, validado en el
@@ -63,6 +67,21 @@ ICP_ENVIRONMENT=local npm --prefix frontend run dev
 Elige **Registro ICP**. No hace falta redesplegar. No se hace una asociación
 automática entre los paquetes importados y publicaciones remotas, ni se afirma
 que los registros locales estén certificados por ICP.
+
+Si Vite encuentra el puerto ocupado, elige el comando del modo que necesitas
+y abre la URL impresa:
+
+```bash
+npm --prefix frontend run dev -- --mode evidence --host 127.0.0.1 --port 5174 --strictPort
+# O, para la red y el backend ICP existentes:
+ICP_ENVIRONMENT=local npm --prefix frontend run dev -- --host 127.0.0.1 --port 5174 --strictPort
+```
+
+Un error `Invalid request expiry` detiene las consultas hasta
+recargar después de resolver el reloj. Comprueba Windows/WSL y PocketIC; no
+reinicies ni recrees la red local como arreglo rápido: puede perderse el estado
+publicado. El [procedimiento de diagnóstico](../README.md#desfase-de-reloj--pocketic)
+permite conservar la demo en la vista local si ICP no está disponible.
 
 ## Formato e integridad
 
