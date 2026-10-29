@@ -58,6 +58,40 @@ El MVP implementa una única misión, `counter-v1`, y limita cada ejecución coo
 
 El sistema está pensado para una demostración y experimentación **local**. No implementa autenticación para usuarios finales, ejecución multiusuario como servicio público ni publicación automática en la red principal de Internet Computer.
 
+### 1.5. Justificación e innovación: de los resultados de IA a evidencias contrastables
+
+#### Justificación del proyecto
+
+La incorporación de agentes de inteligencia artificial al desarrollo de software permite generar y modificar programas con rapidez, pero también plantea una dificultad de confianza: **¿cómo distinguir una afirmación de éxito realizada por un agente de un resultado comprobado por un mecanismo independiente?** El problema no termina al ejecutar las pruebas. Si el código evaluado, el informe y los criterios no quedan vinculados de forma verificable, resulta difícil reconstruir qué versión produjo determinado resultado, identificar una reparación o detectar modificaciones posteriores.
+
+Agent Court aborda esta necesidad mediante un enfoque de **evaluación independiente, trazabilidad criptográfica y registro externo de metadatos**. Su aportación no consiste en utilizar IA para escribir un contador —una tarea deliberadamente sencilla—, sino en construir un proceso inspeccionable que conserva tanto los **intentos fallidos** como los exitosos. Este diseño resulta pertinente para escenarios de desarrollo asistido por IA, revisión técnica, auditoría de cambios y comparación reproducible de candidatos.
+
+#### Conceptos fundamentales
+
+| Tecnología o concepto | ¿Qué es? | ¿Qué aporta a Agent Court? |
+| --- | --- | --- |
+| **Blockchain o cadena de bloques** | Tecnología de registro distribuido en la que una red aplica reglas compartidas para acordar y conservar su estado. Su diseño dificulta que un participante aislado modifique unilateralmente el registro consensuado. | Introduce un plano de registro diferente del equipo donde trabajan Codex y Docker. El proyecto no implementa su propia blockchain: utiliza la infraestructura de ICP. |
+| **Internet Computer Protocol (ICP)** | Plataforma blockchain que ejecuta aplicaciones mediante una red de subredes y nodos, con consenso y estado replicado. Puede alojar lógica de aplicación y datos, no solamente transferencias de tokens. | Proporciona el entorno donde puede ejecutarse el canister encargado del registro de misiones e intentos. En el MVP se utiliza una **réplica local** para desarrollo; esta no equivale al despliegue en la red pública distribuida. |
+| **Canister** | Unidad de software de ICP que combina código WebAssembly y estado persistente. Se comunica a través de mensajes y puede exponer métodos de actualización (*update*) y consulta (*query*). | Implementa en Rust las reglas del registro: autorización de escrituras, validación de identificadores, control de duplicados y continuidad de predecesores. |
+| **Hash SHA-256** | Función criptográfica que transforma una secuencia de bytes en una huella de **256 bits**, representada normalmente mediante 64 caracteres hexadecimales. Cambiar los bytes suele producir una huella diferente. | Relaciona el código evaluado, los criterios y el informe con sus registros exactos. Permite comprobar discrepancias sin subir a ICP el contenido completo de esos archivos. |
+| **Cadena de intentos** | Secuencia de registros en la que cada intento identifica su predecesor mediante `previous_attempt_id`. En Agent Court es una cadena **lógica de evidencias**, distinta de la estructura interna de bloques de ICP. | Permite reconstruir el orden de evaluaciones y conservar explícitamente el recorrido **FAIL → reparación → PASS**, sin sustituir el intento fallido por el exitoso. |
+
+#### Propuesta de valor diferencial
+
+La innovación de Agent Court reside en **combinar capacidades que, por separado, no resuelven el problema completo**:
+
+1. **Los agentes producen propuestas, no veredictos.** Builder y Repair modifican el candidato; Reviewer analiza defectos; un evaluador Rust separado decide el resultado a partir de pruebas ejecutadas dentro de Docker.
+2. **La evidencia corresponde a bytes concretos.** `artifact_hash`, `criteria_hash` y `report_hash` identifican el código, los criterios y el informe conservados; la cadena de predecesores permite analizar su evolución.
+3. **Los intentos fallidos son información valiosa.** A diferencia de una demostración que enseña solo el resultado final, Agent Court conserva el error inicial y la reparación posterior, aportando contexto al proceso de desarrollo asistido por IA.
+4. **ICP ofrece un registro externo al entorno del agente.** El canister puede almacenar y exponer los metadatos mediante reglas programadas, reduciendo la dependencia exclusiva de una base de datos privada del operador. Las consultas permiten contrastar identificadores y hashes con los paquetes locales.
+5. **La arquitectura evita publicar datos innecesarios.** Código fuente, diagnósticos completos y logs permanecen fuera de ICP. El registro on-chain contiene referencias compactas; el dashboard muestra claramente qué datos son locales y cuáles provienen del canister.
+
+**Diferencial frente a una implementación Web 2.0 convencional:** una aplicación tradicional podría guardar todos los resultados en una base de datos controlada por el servidor que también ejecuta la evaluación. Agent Court **separa la generación, la comprobación, la conservación del artefacto y el registro de sus metadatos**. Esa separación habilita un modelo de auditoría más transparente y, en un despliegue público de ICP con gobernanza adecuada, reduce la necesidad de confiar exclusivamente en un administrador de base de datos. Las bases de datos Web 2.0 también pueden incorporar auditorías, firmas y controles de integridad; la diferencia es la **infraestructura y gobernanza del registro**, no una supuesta imposibilidad técnica de conseguir trazabilidad fuera de blockchain.
+
+**Alcance real de la garantía:** el canister no inspecciona ni ejecuta el código candidato: registra los hashes y veredictos proporcionados por una identidad autorizada. Los hashes detectan cambios de bytes, pero **no prueban por sí solos autoría, corrección del programa o autenticidad de la ejecución**. Además, mientras existan controladores con privilegios administrativos, no corresponde calificar el canister como absolutamente inmutable. La réplica local de este MVP demuestra la integración funcional con ICP, **no** las garantías de descentralización de un despliegue en mainnet.
+
+Fuentes de referencia: [arquitectura de aplicaciones ICP](https://docs.internetcomputer.org/getting-started/app-architecture/), [canisters y controladores](https://docs.internetcomputer.org/concepts/canisters/), [modelo de red y subredes](https://docs.internetcomputer.org/concepts/network-overview/) y [datos certificados y límites de las consultas](https://docs.internetcomputer.org/concepts/certified-data/).
+
 ## 2. Arquitectura del sistema
 
 ### 2.1. Componentes principales
@@ -298,6 +332,57 @@ La memoria estable permite conservar datos durante actualizaciones compatibles d
 El comando Rust `publish` verifica un paquete antes de enviarlo al backend local, consulta la misión y la cadena remota, detecta duplicados o conflictos y confirma el resultado mediante `get_attempt`. La publicación es **manual y explícita**; no sucede al evaluar, verificar o importar un JSON en el frontend.
 
 El publicador está limitado al entorno ICP local administrado en loopback. La red principal (*mainnet*) está fuera de su alcance actual.
+
+### 6.4. Flujo del canister y relación entre Web 2.0 y Web3
+
+El canister actúa como **registro de metadatos de evaluación**, no como coordinador de los agentes ni como infraestructura para ejecutar el código generado. El flujo siguiente muestra los límites de cada componente y distingue la escritura autorizada de la lectura pública:
+
+```mermaid
+flowchart TB
+    subgraph LOCAL["Entorno local · fuera de ICP"]
+        A["Codex · Builder / Reviewer / Repair"]
+        E["Evaluador Rust + Docker · pruebas reales"]
+        H["Paquetes locales · artifact.rs / informes / hashes SHA-256"]
+        P["Publicador Rust · verify + comprobación de cadena remota"]
+        A --> E --> H --> P
+    end
+
+    subgraph ICP["Registro en el canister Rust de ICP"]
+        U{"register_attempt · update"}
+        V["Autorización del controlador · misión / hashes / predecesor / duplicados"]
+        M[("Memoria estable · solo metadatos y hashes")]
+        Q["get_attempt / list_attempts · query"]
+        U --> V
+        V -->|"Registro válido"| M
+        M --> Q
+    end
+
+    P -->|"Candid · escritura explícita y firmada"| U
+    V -->|"Rechazo"| X["Sin modificar el historial"]
+    Q -->|"Metadatos consultados"| W["Dashboard · Registro ICP"]
+    H -->|"Exportación JSON y verificación local"| L["Dashboard · Evidencia local"]
+```
+
+**Interpretación paso a paso.** El evaluador produce un candidato, un informe y sus hashes en el equipo local. El operador decide si publica un intento; antes de hacerlo, el publicador vuelve a verificar el paquete y la cadena remota. Después envía un mensaje `register_attempt` al canister con la identidad autorizada. El canister valida los campos y exige que el predecesor corresponda a la punta actual de la misión; si se cumplen sus reglas, registra los metadatos en memoria estable. Las consultas `get_attempt` y `list_attempts` permiten recuperar los registros para el dashboard. El contenido íntegro del artefacto y el informe sigue siendo local.
+
+La siguiente comparación destaca **qué cambia al utilizar un registro en ICP** sin atribuir al MVP capacidades que no implementa:
+
+| Aspecto | Arquitectura Web 2.0 habitual | Arquitectura de Agent Court con ICP |
+| --- | --- | --- |
+| **Almacenamiento del registro** | Base de datos administrada por el operador del servidor. | Metadatos registrados mediante un canister Rust; los artefactos completos siguen en el almacén local. |
+| **Reglas de escritura** | API del backend y permisos configurados por su administrador. | Métodos `update` del canister con reglas Candid/Rust y control de identidades autorizadas. |
+| **Consulta del historial** | La respuesta procede del servidor de la aplicación. | El dashboard consulta métodos `query` del canister; las respuestas ordinarias de consulta **no son automáticamente certificadas** por la aplicación. |
+| **Modificación de registros** | Depende de la aplicación y de los privilegios de administración de la base de datos. | La API de Agent Court no expone edición ni borrado; los **controladores del canister conservan facultades administrativas**, incluidas actualizaciones o reinstalaciones. |
+| **Conservación de código e informes** | Puede concentrarse en el mismo servidor que evalúa y registra. | Se mantiene local; ICP conserva hashes e identificadores para contrastar los paquetes correspondientes. |
+| **Infraestructura de confianza** | Depende de los servidores, respaldos y políticas del operador. | En **mainnet**, el estado del canister se ejecuta y replica bajo el protocolo de la red; en **PocketIC local**, esa distribución de confianza no se reproduce. |
+
+#### ¿Por qué utilizar un canister en lugar de almacenar todo en la blockchain?
+
+Un registro de cada archivo completo aumentaría almacenamiento, complejidad y exposición de código o diagnósticos. Agent Court utiliza una estrategia de **anclaje de metadatos**: mantiene los bytes inspeccionables fuera del canister y registra identificadores, hashes y veredictos. Esto permite comprobar si un archivo local coincide con la referencia registrada sin convertir al canister en un repositorio de código ni en una máquina de ejecución de candidatos.
+
+En la red pública, los canisters consumen **cycles** para cubrir cómputo y almacenamiento, un modelo conocido como *reverse gas*: el desarrollador o proveedor mantiene los recursos de la aplicación, sin exigir al usuario final pagar una comisión de blockchain por cada consulta habitual. Este principio es una característica de ICP, **no una funcionalidad de pagos implementada por Agent Court**. Véase [Cycles en ICP](https://docs.internetcomputer.org/concepts/cycles/).
+
+Finalmente, no debe confundirse el consenso de las actualizaciones del estado del canister con la **certificación criptográfica de cada respuesta `query`**. ICP dispone de mecanismos de *certified data*, pero este MVP no implementa una prueba certificada específica para demostrar en el navegador la pertenencia de cada hash al estado consensuado. Esa sería una mejora pertinente para una versión pública. Véase [Certified data](https://docs.internetcomputer.org/concepts/certified-data/).
 
 ## 7. Interfaz de usuario
 
@@ -1123,4 +1208,3 @@ Entre las extensiones técnicamente justificadas se encuentran más misiones y l
 ---
 
 **Agent Court: Codex Evidence Engine** separa el trabajo de los agentes, la decisión del evaluador, la conservación de los artefactos y el registro de metadatos. Su contribución principal, dentro del alcance del MVP, consiste en hacer **inspeccionable y contrastable** el resultado de cada intento sin equiparar la salida de una IA con una prueba independiente ni presentar la consistencia SHA-256 como una demostración absoluta de corrección.
-
