@@ -10,6 +10,20 @@ La implementación actual se centra deliberadamente en una misión reproducible,
 
 **Repositorio:** https://github.com/Ang3lhack/Agent_court
 
+## Recorrido visual
+
+### GIF de demostración
+
+**Espacio para el archivo:** ` `.
+
+Este GIF debe mostrar el flujo funcional de Agent Court: importar o consultar evidencias, inspeccionar una evaluación fallida y comparar el resultado con el intento reparado. Así se aprecia cómo se relacionan los agentes, las pruebas independientes y la trazabilidad de cada intento.
+
+### GIF promocional
+
+**Espacio para el archivo:** `arrastra el GIF promocional aquí`.
+
+Este GIF debe presentar brevemente el propósito y la interfaz del proyecto: coordinación de agentes, evaluación aislada y registro de metadatos. Es una introducción visual; no sustituye la demostración técnica ni implica que exista una versión pública desplegada.
+
 ## Índice
 
 1. [Planteamiento y objetivos](#1-planteamiento-y-objetivos)
@@ -19,6 +33,7 @@ La implementación actual se centra deliberadamente en una misión reproducible,
 5. [Modelo de evidencias y verificación](#5-modelo-de-evidencias-y-verificación)
 6. [Registro descentralizado con ICP](#6-registro-descentralizado-con-icp)
 7. [Interfaz de usuario](#7-interfaz-de-usuario)
+   - [Capturas de evidencia](#71-capturas-de-evidencia)
 8. [Tecnologías, programas y dependencias](#8-tecnologías-programas-y-dependencias)
 9. [Organización del repositorio](#9-organización-del-repositorio)
 10. [Tutorial de instalación desde cero](#10-tutorial-de-instalación-desde-cero)
@@ -395,6 +410,59 @@ El frontend ofrece un dashboard oscuro orientado a la inspección técnica. Cont
 El JSON se procesa en el navegador y no se envía a un servicio externo por la función de importación. Por seguridad, las exportaciones que contengan código, diagnósticos y logs **no deben colocarse en `frontend/public/` ni subirse al repositorio**.
 
 La exportación local admite hasta **8 MiB**, **100 intentos**, **1 MiB por archivo o log** y un índice de **2 MiB**. El navegador necesita un origen compatible con Web Crypto, como `localhost` o HTTPS, para calcular SHA-256.
+
+### 7.1. Capturas de evidencia
+
+Las capturas siguientes documentan el dashboard y un historial de cuatro intentos de `counter-v1`. La vista local permite comparar artefactos, informes y criterios; la vista ICP presenta los metadatos de una réplica local. Los eventos Reviewer/Repair que aparecen en las capturas proceden de un log local importado y no están certificados por ICP.
+
+#### Evidencia local
+
+**Captura 1 — Inicio de Evidencia local.** Muestra la interfaz de solo lectura y la selección del JSON exportado. Es el punto de entrada para inspeccionar evidencias locales; no publica el archivo.
+
+> <img width="1366" height="768" alt="captura1" src="https://github.com/user-attachments/assets/de5911b4-0fa9-4479-9da8-7e3b2513a114" />
+
+
+**Captura 2 — Historial completo.** Presenta los cuatro intentos y sus veredictos `PASS → PASS → FAIL → PASS`, junto con el selector de intentos para la comparación.
+
+> <img width="1366" height="768" alt="captura2" src="https://github.com/user-attachments/assets/ae7aebb2-c585-4594-a1bc-33b69b012828" />
+
+
+**Captura 3 — Comparación del intento fallido y su reparación.** Contrasta hashes de artefacto, informe y criterios, y expone los resultados `FAIL` y `PASS` para analizar qué cambió.
+
+> <img width="1366" height="768" alt="captura3" src="https://github.com/user-attachments/assets/45576eaf-b203-445a-bdeb-b1ed616a3550" />
+
+
+**Captura 4 — Trazabilidad de agentes.** Muestra las tarjetas de Builder, Evaluator, Reviewer y Repair, el diagnóstico del Reviewer y la reparación registrados en el log local. El Builder figura omitido en esta demostración controlada.
+
+> <img width="1366" height="768" alt="captura4" src="https://github.com/user-attachments/assets/8f97a39f-d330-4d83-a60c-ff4b7cef5df9" />
+
+
+**Captura 5 — Detalle técnico lado a lado.** Enseña los criterios, el código evaluado y el aislamiento registrado para los intentos A y B; permite relacionar el veredicto con la evidencia conservada.
+
+> <img width="1366" height="768" alt="captura5" src="https://github.com/user-attachments/assets/995c311b-436c-42ed-b8b9-ebe987c78b47" />
+
+
+**Captura 6 — Log de la demostración.** Muestra el historial importado y los eventos de la secuencia de evaluación y reparación, con su hash de copia. El log complementa los paquetes, pero no forma parte de la certificación ICP.
+
+> <img width="1366" height="768" alt="captura6" src="https://github.com/user-attachments/assets/4f7edbe3-3848-4cfd-b9c6-4e363a0968b8" />
+
+
+#### Registro ICP local
+
+**Captura 7 — Consulta de misiones en ICP.** Muestra que el dashboard está conectado al canister de la red local y presenta la misión `counter-v1`. La pantalla indica metadatos consultados, no evidencia local completa.
+
+> <img width="1366" height="768" alt="captura7" src="https://github.com/user-attachments/assets/60a3ee8a-3d99-4158-a42e-6e59de00d663" />
+
+
+**Captura 8 — Intentos registrados.** Presenta los identificadores, veredictos, hashes y predecesores almacenados para la misión. Hace visible cómo se conserva la secuencia de intentos, incluido el fallo.
+
+> <img width="1366" height="768" alt="captura8" src="https://github.com/user-attachments/assets/f39fce71-ea80-425b-8a90-89f4afcad71f" />
+
+
+**Captura 9 — Cierre de la cadena de intentos.** Muestra el final del listado, con el intento `FAIL` seguido por su reparación `PASS` y el cierre de la vista de consulta ICP.
+
+> <img width="1366" height="768" alt="captura9" src="https://github.com/user-attachments/assets/511161eb-ac1d-41d9-b006-a9eab76769af" />
+
 
 ## 8. Tecnologías, programas y dependencias
 
@@ -1174,7 +1242,13 @@ Un historial conservado de desarrollo contiene cuatro intentos de `counter-v1` c
 - **Disponibilidad:** Codex requiere acceso al modelo; Docker e ICP local dependen de los servicios ejecutados en la máquina de desarrollo.
 - **Escalabilidad:** el backend está acotado a 100 misiones, 10.000 intentos y páginas de hasta 100 elementos. No es un servicio de registro de gran escala.
 
-### 14.3. Posibles ampliaciones
+### 14.3. Demostración en línea e interfaz de entrada
+
+- **Sin demo pública:** el MVP no cuenta con una demostración alojada en línea. La aplicación integra un canister ICP y, en el estado documentado, la red blockchain utilizada para las pruebas funciona localmente. Publicar una demo requiere preparar y desplegar los canisters y el frontend en una red pública, configurar identidades y controladores, atender los costos de operación y validar el flujo completo. Por ello, las capturas y los GIF de esta documentación deben entenderse como material de una ejecución local, no como una aplicación pública disponible.
+- **Interfaz local basada en JSON:** la vista de Evidencia local importa exportaciones JSON generadas por el evaluador; no es un chatbot conversacional y no acepta preguntas en lenguaje natural ni archivos arbitrarios. Esto limita las formas de interactuar con los resultados. Como trabajo futuro se puede implementar un chatbot que acepte inicialmente esos JSON, los valide y responda consultas sobre sus intentos, hashes, criterios e informes, conservando el procesamiento local y los límites de confianza ya descritos.
+- **Evolución del despliegue:** una demo en ICP público y una experiencia conversacional requerirían trabajo de implementación, seguridad y validación; no son funciones disponibles en esta versión.
+
+### 14.4. Posibles ampliaciones
 
 Entre las extensiones técnicamente justificadas se encuentran más misiones y lenguajes, una arquitectura de evaluación con aislamiento más fuerte, pruebas de propiedades y cobertura, firma o atestación de ejecuciones, certificación verificable de metadatos, políticas de controladores para despliegues públicos y mecanismos de gestión multiusuario. Tales características requieren diseños y pruebas adicionales y **no deben confundirse con funciones ya implementadas**.
 
