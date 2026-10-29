@@ -20,7 +20,8 @@ Este GIF debe mostrar el flujo funcional de Agent Court: importar o consultar ev
 
 ### GIF promocional
 
-**Espacio para el archivo:** `arrastra el GIF promocional aquí`.
+**Espacio para el archivo:** `<img width="1280" height="720" alt="agent-court-motion" src="https://github.com/user-attachments/assets/9f509ad3-67d0-48fd-af4c-629067883ac1" />
+`.
 
 Este GIF debe presentar brevemente el propósito y la interfaz del proyecto: coordinación de agentes, evaluación aislada y registro de metadatos. Es una introducción visual; no sustituye la demostración técnica ni implica que exista una versión pública desplegada.
 
