@@ -4,7 +4,7 @@ import { icpBindgen } from "@icp-sdk/bindgen/plugins/vite";
 import { execSync } from "child_process";
 
 
-export default defineConfig(({ command }) => {
+export default defineConfig(({ command, mode }) => {
   const plugins = [
     react(),
     icpBindgen({
@@ -14,7 +14,8 @@ export default defineConfig(({ command }) => {
   ];
 
   // If we're only building this is enough
-  if (command !== "serve") {
+  // Local evidence needs only the existing Vite server, no ICP process or query.
+  if (command !== "serve" || mode === "evidence") {
     return { plugins };
   }
 

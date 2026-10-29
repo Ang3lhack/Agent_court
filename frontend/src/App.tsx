@@ -3,6 +3,7 @@ import type { EvaluationAttempt, Mission, Verdict } from "./backend/api/backend"
 import { useRegistryPage, type ConnectionState } from "./hooks/useRegistryPage";
 import { readAttemptPage, readMissionPage } from "./lib/client";
 import { formatTimestamp, type QueryFailure } from "./lib/registry";
+import LocalEvidencePanel from "./LocalEvidencePanel";
 import "./App.css";
 
 const missionKey = (mission: Mission) => mission.mission_id;
@@ -82,7 +83,7 @@ function MissionDetail({ mission, blocked, onConnection }: {
   );
 }
 
-function App() {
+function RegistryView() {
   const [connection, setConnection] = useState<ConnectionState>({ status: "checking" });
   const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
   const detailPanel = useRef<HTMLElement>(null);
@@ -99,18 +100,8 @@ function App() {
   const connectionLabel = connection.status === "connected" ? "Conectado" : connection.status === "checking" ? "Comprobando conexión" : blocked ? "Consultas detenidas" : "Consulta fallida";
 
   return (
-    <div className="app-shell">
-      <a className="skip-link" href="#missions">Ir a las misiones</a>
-      <header className="app-header">
-        <a className="brand" href="#" aria-label="Agent Court, inicio"><span className="brand-mark" aria-hidden="true">AC</span><span>Agent Court<span className="brand-caption">Codex Evidence Engine</span></span></a>
-        <span className="read-only">Solo lectura</span>
-      </header>
-      <main>
-        <section className="intro" aria-labelledby="page-title">
-          <p className="eyebrow">EVIDENCIA PARA EL CÓDIGO GENERADO POR AGENTES</p>
-          <h1 id="page-title">Agent Court<span className="title-dot">.</span></h1>
-          <p className="intro-description">Explora misiones, revisa los resultados de evaluación y consulta las referencias de evidencia registradas en Internet Computer.</p>
-        </section>
+    <>
+      <p className="notice local-notice">Metadatos consultados al canister. Esta vista no descarga informes ni eventos de agentes y no certifica el contenido de un archivo local.</p>
         <section className="registry-status" aria-label="Estado del registro">
           <div><span className="stat-label">Misiones cargadas</span><strong className="stat-number">{missions.items.length}</strong><span className="stat-note">{missions.hasMore ? "Puede haber más páginas" : "En el listado actual"}</span></div>
           <div><span className="stat-label">Última consulta a ICP</span><span className={`connection-status connection-${connection.status}`} role="status"><span className="status-dot" aria-hidden="true" />{connectionLabel}</span><span className="stat-note">{connection.status === "connected" ? "Respuesta recibida del canister" : "El estado se comprueba mediante una consulta"}</span></div>
@@ -142,10 +133,36 @@ function App() {
             {selectedMission ? <MissionDetail key={selectedMission.mission_id} mission={selectedMission} blocked={blocked} onConnection={onConnection} /> : <div className="empty-state selection-state"><span className="empty-symbol" aria-hidden="true">⌘</span><p className="eyebrow">HISTORIAL DE EVALUACIÓN</p><h2 id="mission-detail-title">Selecciona una misión</h2><p>Consulta sus intentos, veredictos y hashes de evidencia en este panel.</p></div>}
           </section>
         </div>
-      </main>
-      <footer className="app-footer"><span>Agent Court / Codex Evidence Engine</span><span>Consultas reales · Sin escritura en el registro</span></footer>
-    </div>
+    </>
   );
+}
+
+function App() {
+  const [view, setView] = useState<"local" | "icp">("local");
+  const [openedRegistry, setOpenedRegistry] = useState(false);
+  return <div className="app-shell">
+    <a className="skip-link" href="#evidence-view">Ir a la evidencia</a>
+    <header className="app-header">
+      <a className="brand" href="#" aria-label="Agent Court, inicio"><span className="brand-mark" aria-hidden="true">AC</span><span>Agent Court<span className="brand-caption">Codex Evidence Engine</span></span></a>
+      <span className="read-only">Solo lectura</span>
+    </header>
+    <main>
+      <section className="intro" aria-labelledby="page-title">
+        <p className="eyebrow">EVIDENCIA PARA EL CÓDIGO GENERADO POR AGENTES</p>
+        <h1 id="page-title">Agent Court<span className="title-dot">.</span></h1>
+        <p className="intro-description">Compara resultados, inspecciona pruebas y sigue la cadena de evidencia. Cada dato conserva su origen: archivos locales o metadatos de Internet Computer.</p>
+      </section>
+      <nav className="source-switch" aria-label="Origen de los datos">
+        <button className="button" aria-pressed={view === "local"} aria-controls="evidence-view" onClick={() => setView("local")}>Evidencia local</button>
+        <button className="button" aria-pressed={view === "icp"} aria-controls="evidence-view" onClick={() => { setOpenedRegistry(true); setView("icp"); }}>Registro ICP</button>
+      </nav>
+      <div id="evidence-view">
+        <div hidden={view !== "local"}><LocalEvidencePanel /></div>
+        <div hidden={view !== "icp"}>{openedRegistry && <RegistryView />}</div>
+      </div>
+    </main>
+    <footer className="app-footer"><span>Agent Court / Codex Evidence Engine</span><span>{view === "local" ? "Archivos locales · Sin publicación" : "Consultas al registro · Sin escritura"}</span></footer>
+  </div>;
 }
 
 export default App;

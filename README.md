@@ -172,6 +172,13 @@ El backend restringe `register_mission` y `register_attempt` a controladores del
 
 ## Desarrollo del frontend
 
+La etapa 6 permite comparar paquetes locales verificados y consultar por
+separado los metadatos ICP. Para explorar el historial real de Reviewer/Repair
+sin iniciar redes ni desplegar, sigue la [demostración local del frontend](frontend/README.md).
+El comando `npm --prefix frontend run dev -- --mode evidence` abre ese modo con
+el Vite existente. Los archivos importados no se suben ni se presentan como
+certificados por ICP.
+
 El servidor Vite consulta el estado de la red local y el ID del canister backend, por lo que primero debes iniciar la red y desplegar el backend. En una segunda terminal WSL:
 
 ```bash
