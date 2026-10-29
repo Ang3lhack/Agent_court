@@ -23,8 +23,7 @@ El video muestra el flujo funcional de Agent Court: importar o consultar evidenc
 <img width="1280" height="720" alt="agent-court-motion" src="https://github.com/user-attachments/assets/6cbe4d36-a67c-45fc-a5e0-f9e84904af74" />
 
 
-Este GIF debe presentar brevemente el propósito y la interfaz del proyecto: coordinación de agentes, evaluación aislada y registro de metadatos. Es una introducción visual; no sustituye la demostración técnica ni implica que exista una versión pública desplegada.
-
+Este GIF presenta brevemente el propósito y la interfaz del proyecto: coordinación de agentes, evaluación aislada y registro de metadatos.
 ## Índice
 
 1. [Planteamiento y objetivos](#1-planteamiento-y-objetivos)
