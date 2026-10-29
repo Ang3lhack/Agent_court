@@ -12,11 +12,11 @@ La implementación actual se centra deliberadamente en una misión reproducible,
 
 ## Recorrido visual
 
-### GIF de demostración
+### Demostración
 
-**Espacio para el archivo:** ` `.
+**Video de pruebas:** https://drive.google.com/file/d/14HVdwSpp4gVASov83oN63NUdUdKOyLv6/view?usp=drive_link
 
-Este GIF debe mostrar el flujo funcional de Agent Court: importar o consultar evidencias, inspeccionar una evaluación fallida y comparar el resultado con el intento reparado. Así se aprecia cómo se relacionan los agentes, las pruebas independientes y la trazabilidad de cada intento.
+El video muestra el flujo funcional de Agent Court: importar o consultar evidencias, inspeccionar una evaluación fallida y comparar el resultado con el intento reparado. Así se aprecia cómo se relacionan los agentes, las pruebas independientes y la trazabilidad de cada intento.
 
 ### GIF promocional
 
